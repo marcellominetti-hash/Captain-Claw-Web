@@ -11,7 +11,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: captain-claw-pages
+  group: captain-claw-pages-direct
   cancel-in-progress: true
 
 env:
@@ -19,7 +19,7 @@ env:
   CLAW_WEB_COMMIT: e723d3d48b5ba2cc723751209954cfc46c82d202
 
 jobs:
-  build:
+  build-and-deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -51,6 +51,7 @@ jobs:
           python3 scripts/patch_openclaw_zip.py upstream
           grep -q 'ResourceZipArchive(rezArchivePath)' upstream/OpenClaw/Engine/GameApp/BaseGameApp.cpp
           grep -q 'CLAW_ASSETS.ZIP' upstream/Build_Release/config.xml
+          grep -q "hasFile('CLAW_ASSETS.ZIP')" upstream/Build_Release/game-init.js
           grep -q 'CLAW_ASSETS.ZIP' upstream/Build_Release/asset-loader.js
 
       - name: Install Emscripten SDK
@@ -98,6 +99,7 @@ jobs:
           test -s _site/openclaw.data
           test -s _site/index.html
           grep -q 'CLAW_ASSETS.ZIP' _site/asset-loader.js
+          grep -q "hasFile('CLAW_ASSETS.ZIP')" _site/game-init.js
           if find _site -type f \( -iname 'CLAW.REZ' -o -iname 'CLAW_ASSETS.ZIP' \) | grep -q .; then
             echo 'ERROR: copyrighted game-data archive must not be deployed.' >&2
             exit 1
@@ -111,13 +113,6 @@ jobs:
         with:
           path: _site
 
-  deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4

@@ -115,10 +115,86 @@ html = html.replace(
     '<section id="assetUpload" class="onboard" style="display:flex">',
     1,
 )
+
+# The upstream recovery overlay says every runtime failure is a bad game file,
+# which is misleading once we use a ZIP backend. Make it a real diagnostic
+# screen and show the actual WASM abort plus the last engine log lines.
+old_failure_text = '''<p>This usually means the uploaded <strong>CLAW_ASSETS.ZIP</strong> is not the
+           correct file from Captain Claw (1997), or it was corrupted.</p>'''
+new_failure_text = '''<p>The OpenClaw engine stopped while loading or running the game.</p>
+        <pre id="loadErrorDetails" style="white-space:pre-wrap;text-align:left;max-height:32vh;overflow:auto;font-size:12px;background:#0b0f14;padding:12px;border-radius:10px;color:#ffb4ab">No diagnostic details yet.</pre>'''
+if old_failure_text not in html:
+    raise SystemExit('Load-error text block not found')
+html = html.replace(old_failure_text, new_failure_text, 1)
+
+# Capture stdout/stderr produced by Emscripten/OpenClaw. ResourceZipArchive
+# already logs ZIP lookup misses, so this gives us the exact missing resource
+# on a phone without requiring DevTools.
+module_needle = '      var Module = {\n'
+module_replacement = '''      window.__clawDiag = [];
+      window.__pushClawDiag = function (line) {
+        line = String(line == null ? '' : line);
+        window.__clawDiag.push(line);
+        if (window.__clawDiag.length > 120) window.__clawDiag.shift();
+      };
+      var Module = {
+        print: function (text) { console.log(text); window.__pushClawDiag(text); },
+        printErr: function (text) { console.error(text); window.__pushClawDiag(text); },
+'''
+if module_needle not in html:
+    raise SystemExit('Module bootstrap not found for diagnostics')
+html = html.replace(module_needle, module_replacement, 1)
+
+html = html.replace(
+    "if (window.showLoadError) window.showLoadError();",
+    "if (window.showLoadError) window.showLoadError('WASM abort: ' + what);",
+    1,
+)
+
+show_error_old = '''        window.showLoadError = function () {
+          if (shown) return;
+          shown = true;
+          if (watchdog) { clearTimeout(watchdog); watchdog = null; }
+          if (overlay) overlay.classList.add('visible');
+        };'''
+show_error_new = '''        window.showLoadError = function (reason) {
+          if (shown) return;
+          shown = true;
+          if (watchdog) { clearTimeout(watchdog); watchdog = null; }
+          var details = document.getElementById('loadErrorDetails');
+          if (details) {
+            var lines = (window.__clawDiag || []).slice(-18);
+            var msg = reason ? String(reason) : 'Unknown runtime failure';
+            if (lines.length) msg += '\\n\\nRecent engine log:\\n' + lines.join('\\n');
+            details.textContent = msg;
+          }
+          if (overlay) overlay.classList.add('visible');
+        };'''
+if show_error_old not in html:
+    raise SystemExit('showLoadError controller not found')
+html = html.replace(show_error_old, show_error_new, 1)
+
+# The 20-second watchdog can produce a false "bad file" overlay on slower
+# Android devices even while the game is already drawing. Keep a warning for
+# diagnostics but never cover a working game; genuine aborts/errors still show.
+watchdog_old = '''          watchdog = setTimeout(function () {
+            if (!window.__captainClawWebRunning) window.showLoadError();
+          }, 20000);'''
+watchdog_new = '''          watchdog = setTimeout(function () {
+            if (!window.__captainClawWebRunning) {
+              console.warn('[Watchdog] OpenClaw has not reached postRun yet; leaving the canvas visible.');
+            }
+          }, 60000);'''
+if watchdog_old not in html:
+    raise SystemExit('Load watchdog block not found')
+html = html.replace(watchdog_old, watchdog_new, 1)
+
 if 'accept=".ZIP,.zip,application/zip"' not in html:
     raise SystemExit('ZIP file input accept filter was not patched')
 if '<section id="assetUpload" class="onboard" style="display:flex">' not in html:
     raise SystemExit('First-run upload card was not made immediately visible')
+if 'id="loadErrorDetails"' not in html or 'window.__clawDiag' not in html:
+    raise SystemExit('Runtime diagnostics were not injected')
 write(html_path, html)
 
 for rel in ['Build_Release/config_linux.xml', 'Build_Release/config_linux_release.xml']:

@@ -27,6 +27,43 @@ write(cpp_path, cpp)
 for rel in ['OpenClaw/Engine/GameApp/BaseGameApp.h', 'Build_Release/config.xml']:
     write(rel, read(rel).replace('CLAW.REZ', 'CLAW_ASSETS.ZIP'))
 
+# OpenClaw's RequestResetLevelDelegate runs while EventMgr::VUpdate is already
+# dispatching an event. Upstream VResetLevel() immediately calls VUpdate() again,
+# which asserts on WebAssembly as a nested event update. Defer the reset until
+# BaseGameLogic::VOnUpdate, which runs after the event manager finishes the tick.
+logic_h_path = 'OpenClaw/Engine/GameApp/BaseGameLogic.h'
+logic_h = read(logic_h_path)
+logic_h_needle = '    bool m_Proxy;\n    bool m_bRunning;\n'
+logic_h_replacement = '    bool m_Proxy;\n    bool m_bRunning;\n    bool m_bResetLevelPending;\n'
+if logic_h_needle not in logic_h:
+    raise SystemExit('BaseGameLogic.h reset-pending insertion point not found')
+logic_h = logic_h.replace(logic_h_needle, logic_h_replacement, 1)
+write(logic_h_path, logic_h)
+
+logic_cpp_path = 'OpenClaw/Engine/GameApp/BaseGameLogic.cpp'
+logic_cpp = read(logic_cpp_path)
+ctor_needle = '    m_bRunning = true;\n'
+ctor_replacement = '    m_bRunning = true;\n    m_bResetLevelPending = false;\n'
+if ctor_needle not in logic_cpp:
+    raise SystemExit('BaseGameLogic.cpp constructor reset-pending insertion point not found')
+logic_cpp = logic_cpp.replace(ctor_needle, ctor_replacement, 1)
+
+update_needle = '''void BaseGameLogic::VOnUpdate(uint32 msDiff)\n{\n    m_Lifetime += msDiff;\n'''
+update_replacement = '''void BaseGameLogic::VOnUpdate(uint32 msDiff)\n{\n    m_Lifetime += msDiff;\n\n    // A level-reset request can arrive as an EventMgr delegate. Running the\n    // reset from inside EventMgr::VUpdate recursively calls VUpdate and aborts\n    // in WASM. Execute it here, after the event-manager phase of the frame.\n    if (m_bResetLevelPending && !IEventMgr::Get()->VIsUpdating())\n    {\n        m_bResetLevelPending = false;\n        LOG("Executing deferred level reset after EventMgr update");\n        VResetLevel();\n        return;\n    }\n'''
+if update_needle not in logic_cpp:
+    raise SystemExit('BaseGameLogic.cpp VOnUpdate insertion point not found')
+logic_cpp = logic_cpp.replace(update_needle, update_replacement, 1)
+
+reset_needle = '''void BaseGameLogic::VResetLevel()\n{\n    // Handle all pending events before reset\n    IEventMgr::Get()->VUpdate(IEventMgr::kINFINITE);\n'''
+reset_replacement = '''void BaseGameLogic::VResetLevel()\n{\n    // RequestResetLevelDelegate is itself dispatched by EventMgr::VUpdate.\n    // Never recurse into the event manager; defer one frame instead.\n    if (IEventMgr::Get()->VIsUpdating())\n    {\n        LOG("Deferring level reset until EventMgr update completes");\n        m_bResetLevelPending = true;\n        return;\n    }\n\n    m_bResetLevelPending = false;\n\n    // Handle all pending events before reset\n    IEventMgr::Get()->VUpdate(IEventMgr::kINFINITE);\n'''
+if reset_needle not in logic_cpp:
+    raise SystemExit('BaseGameLogic.cpp VResetLevel insertion point not found')
+logic_cpp = logic_cpp.replace(reset_needle, reset_replacement, 1)
+
+if 'm_bResetLevelPending = true;' not in logic_cpp or 'Executing deferred level reset after EventMgr update' not in logic_cpp:
+    raise SystemExit('Deferred level-reset patch was not applied')
+write(logic_cpp_path, logic_cpp)
+
 # Keep the upstream IndexedDB/offline loader, but switch its user-provided file
 # from CLAW.REZ to an extracted-data ZIP.
 loader_path = 'Build_Release/asset-loader.js'

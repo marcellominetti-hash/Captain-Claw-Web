@@ -51,8 +51,11 @@ jobs:
           grep -q "hasFile('CLAW_ASSETS.ZIP')" upstream/Build_Release/game-init.js
           grep -q "file.name.match(/\\^CLAW_ASSETS\\\\.ZIP\\$/i)" upstream/Build_Release/asset-loader.js
           grep -q "storeFile('CLAW_ASSETS.ZIP'" upstream/Build_Release/asset-loader.js
-          grep -q '\[PORT LOAD\] Skipping blocking VLoadGame full-level preload' upstream/OpenClaw/Engine/GameApp/BaseGameLogic.cpp
-          grep -q '\[PORT LOAD\] Starting .* without blocking bulk preload' upstream/OpenClaw/Engine/GameApp/BaseGameLogic.cpp
+          grep -q 'PortLoadStatus("VLoadGame: bulk preload skipped")' upstream/OpenClaw/Engine/GameApp/BaseGameLogic.cpp
+          grep -q 'PortLoadStatus("Entering " + levelName)' upstream/OpenClaw/Engine/GameApp/BaseGameLogic.cpp
+          grep -q '__setClawLoadStatus' upstream/OpenClaw/Engine/GameApp/BaseGameLogic.cpp
+          grep -q 'PortViewLoadStatus("LoadGame event received")' upstream/OpenClaw/Engine/UserInterface/HumanView.cpp
+          grep -q 'id="portLoadStatus"' upstream/Build_Release/claw-web.html
           ! grep -q "file.name.match(/\\^CLAW\\\\.REZ\\$/i)" upstream/Build_Release/asset-loader.js
           ! grep -q "storeFile('CLAW.REZ'" upstream/Build_Release/asset-loader.js
           ! grep -q "That file is not CLAW.REZ" upstream/Build_Release/asset-loader.js
@@ -128,7 +131,6 @@ jobs:
                   text,
               )
               text = text.replace('openclaw.js', 'openclaw.js?v=' + version)
-              # Avoid double-versioning if a static HTML reference also matched.
               text = text.replace('openclaw.js?v=' + version + '?v=' + version, 'openclaw.js?v=' + version)
               p.write_text(text, encoding='utf-8', newline='\n')
 
@@ -156,6 +158,7 @@ jobs:
           grep -q "file.name.match(/\\^CLAW_ASSETS\\\\.ZIP\\$/i)" _site/asset-loader.js
           grep -q "storeFile('CLAW_ASSETS.ZIP'" _site/asset-loader.js
           ! grep -q "That file is not CLAW.REZ" _site/asset-loader.js
+          grep -q 'id="portLoadStatus"' _site/index.html
           grep -q "game-init.js?v=${GITHUB_SHA:0:12}" _site/index.html
           grep -q "asset-loader.js?v=${GITHUB_SHA:0:12}" _site/game-init.js
           grep -q "openclaw.js?v=${GITHUB_SHA:0:12}" _site/index.html

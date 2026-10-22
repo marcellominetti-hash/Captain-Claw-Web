@@ -30,7 +30,7 @@ static std::string NormalizeZipPath(const std::string& input)
     for (unsigned char raw : input)
     {
         char c = static_cast<char>(std::tolower(raw));
-        if (c == '\\')
+        if (c == '\')
         {
             c = '/';
         }

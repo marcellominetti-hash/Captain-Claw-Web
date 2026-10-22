@@ -40,16 +40,19 @@ jobs:
           git -C upstream fetch --depth=1 origin "$CLAW_WEB_COMMIT"
           git -C upstream checkout --detach FETCH_HEAD
 
-      - name: Patch primary resource source to extracted ZIP
+      - name: Patch browser port
         shell: bash
         run: |
           set -euo pipefail
           python3 scripts/patch_openclaw_zip.py upstream
+          python3 scripts/patch_wasm_level_loading.py upstream
           grep -q 'ResourceZipArchive(rezArchivePath)' upstream/OpenClaw/Engine/GameApp/BaseGameApp.cpp
           grep -q 'CLAW_ASSETS.ZIP' upstream/Build_Release/config.xml
           grep -q "hasFile('CLAW_ASSETS.ZIP')" upstream/Build_Release/game-init.js
           grep -q "file.name.match(/\\^CLAW_ASSETS\\\\.ZIP\\$/i)" upstream/Build_Release/asset-loader.js
           grep -q "storeFile('CLAW_ASSETS.ZIP'" upstream/Build_Release/asset-loader.js
+          grep -q '\[PORT LOAD\] Skipping blocking VLoadGame full-level preload' upstream/OpenClaw/Engine/GameApp/BaseGameLogic.cpp
+          grep -q '\[PORT LOAD\] Starting .* without blocking bulk preload' upstream/OpenClaw/Engine/GameApp/BaseGameLogic.cpp
           ! grep -q "file.name.match(/\\^CLAW\\\\.REZ\\$/i)" upstream/Build_Release/asset-loader.js
           ! grep -q "storeFile('CLAW.REZ'" upstream/Build_Release/asset-loader.js
           ! grep -q "That file is not CLAW.REZ" upstream/Build_Release/asset-loader.js

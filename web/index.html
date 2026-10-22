@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no" />
+  <meta name="theme-color" content="#0b1018" />
+  <title>Corsair Cat — Web Remake Prototype</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main id="app">
+    <section id="hero" class="panel">
+      <div class="eyebrow">CLEAN-ROOM WEB REMAKE</div>
+      <h1>Corsair Cat</h1>
+      <p>Platform piratesco originale, ispirato ai classici anni ’90. Nessun file del gioco originale richiesto.</p>
+      <div class="actions">
+        <button id="playBtn" class="primary">Gioca</button>
+        <button id="controlsBtn">Controlli</button>
+      </div>
+      <p class="fineprint">Prototype v0.1 · asset e codice originali · desktop + touch</p>
+    </section>
+
+    <section id="gameShell" class="hidden" aria-label="gioco">
+      <div id="topbar">
+        <div class="brand">Corsair Cat</div>
+        <div class="top-actions">
+          <button id="restartBtn">↻</button>
+          <button id="fullscreenBtn">⛶</button>
+        </div>
+      </div>
+      <div id="canvasWrap">
+        <canvas id="game" width="960" height="540" tabindex="0"></canvas>
+        <div id="pauseCard" class="overlay-card hidden">
+          <h2>Pausa</h2>
+          <button id="resumeBtn" class="primary">Riprendi</button>
+        </div>
+        <div id="winCard" class="overlay-card hidden">
+          <div class="eyebrow">LIVELLO COMPLETATO</div>
+          <h2>Porto liberato!</h2>
+          <p id="winStats"></p>
+          <button id="againBtn" class="primary">Rigioca</button>
+        </div>
+      </div>
+
+      <div id="touchControls" aria-hidden="true">
+        <div class="dpad">
+          <button data-hold="left">◀</button>
+          <button data-hold="right">▶</button>
+        </div>
+        <div class="touch-actions">
+          <button data-action="attack" class="attack">⚔</button>
+          <button data-action="jump" class="jump">↑</button>
+        </div>
+      </div>
+      <div id="tip">A/D o ←/→ muovi · Spazio salta · Ctrl/X attacca · Esc pausa</div>
+    </section>
+  </main>
+
+  <dialog id="controlsDialog">
+    <h2>Controlli</h2>
+    <p><b>Movimento:</b> A/D oppure frecce</p>
+    <p><b>Salto:</b> Spazio / W / ↑</p>
+    <p><b>Attacco:</b> Ctrl / X</p>
+    <p><b>Pausa:</b> Esc</p>
+    <p>Su smartphone usa i pulsanti sullo schermo.</p>
+    <button id="closeControls" class="primary">Chiudi</button>
+  </dialog>
+
+  <script type="module" src="game.js"></script>
+</body>
+</html>

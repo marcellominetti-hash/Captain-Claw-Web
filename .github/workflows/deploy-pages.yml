@@ -1,0 +1,103 @@
+name: Deploy Capitan Artiglio Web
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: true
+
+env:
+  UPSTREAM_REPO: https://github.com/arthurboss/claw-web.git
+  # Pinned deployed runtime. Keeping this fixed makes our build reproducible.
+  UPSTREAM_GH_PAGES_COMMIT: ee5041244d7a6903f95523ddfc35eebeb0754f4f
+  UPSTREAM_SOURCE_COMMIT: e723d3d48b5ba2cc723751209954cfc46c82d202
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout this project
+        uses: actions/checkout@v4
+
+      - name: Fetch pinned WebAssembly runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir upstream
+          git -C upstream init
+          git -C upstream remote add origin "$UPSTREAM_REPO"
+          git -C upstream fetch --depth=1 origin "$UPSTREAM_GH_PAGES_COMMIT"
+          git -C upstream checkout --detach FETCH_HEAD
+
+      - name: Assemble self-hosted site
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p _site
+          rsync -a \
+            --exclude='.git' \
+            --exclude='staging' \
+            upstream/ _site/
+          python3 scripts/brand.py _site
+          touch _site/.nojekyll
+
+          # Include the GPL license beside the distributed runtime.
+          curl -fsSL \
+            "https://raw.githubusercontent.com/arthurboss/claw-web/${UPSTREAM_SOURCE_COMMIT}/LICENSE.txt" \
+            -o _site/LICENSE.txt
+
+          cat > _site/SOURCE.txt <<EOF
+          Capitan Artiglio Web runtime attribution
+
+          Browser engine: arthurboss/claw-web
+          https://github.com/arthurboss/claw-web
+          Based on: pjasicek/OpenClaw
+          https://github.com/pjasicek/OpenClaw
+
+          Runtime deployment commit (gh-pages): ${UPSTREAM_GH_PAGES_COMMIT}
+          Corresponding source reference used by this project: ${UPSTREAM_SOURCE_COMMIT}
+
+          The engine is distributed under GNU GPL v3. See LICENSE.txt.
+          Original Captain Claw game assets are NOT included in this deployment.
+          The player provides CLAW.REZ locally in their browser.
+          EOF
+
+      - name: Verify no game archive is deployed
+        shell: bash
+        run: |
+          set -euo pipefail
+          if find _site -type f -iname 'CLAW.REZ' | grep -q .; then
+            echo 'ERROR: CLAW.REZ must never be published.' >&2
+            exit 1
+          fi
+          test -s _site/index.html
+          test -s _site/openclaw.js
+          test -s _site/openclaw.wasm
+          test -s _site/openclaw.data
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

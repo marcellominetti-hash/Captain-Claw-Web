@@ -11,7 +11,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: captain-claw-pages-direct
+  group: captain-claw-pages
   cancel-in-progress: true
 
 env:

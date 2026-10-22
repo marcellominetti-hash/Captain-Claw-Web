@@ -10,12 +10,16 @@ permissions:
   pages: write
   id-token: write
 
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
 env:
   CLAW_WEB_REPO: https://github.com/arthurboss/claw-web.git
   CLAW_WEB_COMMIT: e723d3d48b5ba2cc723751209954cfc46c82d202
 
 jobs:
-  build-and-deploy:
+  build:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -178,5 +182,13 @@ jobs:
         with:
           path: _site
 
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
       - name: Deploy to GitHub Pages
+        id: deployment
         uses: actions/deploy-pages@v4

@@ -49,9 +49,11 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/patch_openclaw_zip.py upstream
+          python3 scripts/patch_zip_path_normalization.py upstream
           python3 scripts/patch_wasm_level_loading.py upstream
           python3 scripts/patch_actor_diagnostics.py upstream
           grep -q 'ResourceZipArchive(rezArchivePath)' upstream/OpenClaw/Engine/GameApp/BaseGameApp.cpp
+          grep -q 'NormalizeZipPath' upstream/OpenClaw/Engine/Resource/ZipFile.cpp
           grep -q 'CLAW_ASSETS.ZIP' upstream/Build_Release/config.xml
           grep -q '__setClawLoadStatus' upstream/OpenClaw/Engine/GameApp/BaseGameLogic.cpp
           grep -q 'PortActorStatus' upstream/OpenClaw/Engine/Actor/ActorFactory.cpp

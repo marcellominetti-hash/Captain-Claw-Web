@@ -68,6 +68,12 @@ loader = loader.replace('from the original Captain Claw (1997) game', 'prepared 
 loader = loader.replace('missing the expected archive header', 'missing the expected ZIP header')
 write(loader_path, loader)
 
+# Keep all browser-side cache checks/storage documentation aligned with the new
+# filename, otherwise returning users would be prompted on every launch.
+for rel in ['Build_Release/game-init.js', 'Build_Release/asset-storage.js']:
+    if (root / rel).exists():
+        write(rel, read(rel).replace('CLAW.REZ', 'CLAW_ASSETS.ZIP'))
+
 # First-run page: same upstream UI and game bridges, just the new archive type.
 html_path = 'Build_Release/claw-web.html'
 html = read(html_path).replace('CLAW.REZ', 'CLAW_ASSETS.ZIP')

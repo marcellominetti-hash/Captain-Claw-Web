@@ -104,8 +104,8 @@ jobs:
 
           # 2) Version ES-module imports so an old SW cannot satisfy them from
           # an unversioned cache entry.
-          import_re = re.compile(r"(from\\s+['\"])(\\./[^'\"]+?\\.js)(['\"])")
-          side_effect_re = re.compile(r"(import\\s+['\"])(\\./[^'\"]+?\\.js)(['\"])")
+          import_re = re.compile(r"""(from\s+['"])(\./[^'"]+?\.js)(['"])""")
+          side_effect_re = re.compile(r"""(import\s+['"])(\./[^'"]+?\.js)(['"])""")
           for p in root.rglob('*.js'):
               if p.name == 'sw.js':
                   continue
@@ -116,15 +116,17 @@ jobs:
 
           # 3) Version every JS reference in both entry HTML files, including
           # the dynamically injected openclaw.js runtime.
+          html_js_re = re.compile(r"""(?P<prefix>(?:src|href)=["'])(?P<url>[^"']+?\.js)(?P<suffix>["'])""")
           for name in ('index.html', 'claw-web.html'):
               p = root / name
               text = p.read_text(encoding='utf-8')
-              text = re.sub(
-                  r'(?P<prefix>(?:src|href)=["\'])(?P<url>[^"\']+?\\.js)(?P<suffix>["\'])',
+              text = html_js_re.sub(
                   lambda m: m.group('prefix') + m.group('url') + '?v=' + version + m.group('suffix'),
                   text,
               )
-              text = text.replace('script.src = "openclaw.js";', f'script.src = "openclaw.js?v={version}";')
+              text = text.replace('openclaw.js', 'openclaw.js?v=' + version)
+              # Avoid double-versioning if a static HTML reference also matched.
+              text = text.replace('openclaw.js?v=' + version + '?v=' + version, 'openclaw.js?v=' + version)
               p.write_text(text, encoding='utf-8', newline='\n')
 
           print('Service-worker cache version:', tag)

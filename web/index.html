@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no" />
   <meta name="theme-color" content="#0b1018" />
   <title>Corsair Cat — Web Remake Prototype</title>
-  <link rel="manifest" href="manifest.webmanifest" />
-  <link rel="stylesheet" href="styles.css" />
+  <link rel="manifest" href="manifest.webmanifest?v=2" />
+  <link rel="stylesheet" href="styles.css?v=2" />
 </head>
 <body>
   <main id="app">
@@ -18,7 +18,7 @@
         <button id="playBtn" class="primary">Gioca</button>
         <button id="controlsBtn">Controlli</button>
       </div>
-      <p class="fineprint">Prototype v0.1 · asset e codice originali · desktop + touch</p>
+      <p class="fineprint">Prototype v0.2 · asset e codice originali · desktop + touch</p>
     </section>
 
     <section id="gameShell" class="hidden" aria-label="gioco">
@@ -43,14 +43,14 @@
         </div>
       </div>
 
-      <div id="touchControls" aria-hidden="true">
+      <div id="touchControls" aria-label="controlli touch">
         <div class="dpad">
-          <button data-hold="left">◀</button>
-          <button data-hold="right">▶</button>
+          <button data-hold="left" aria-label="sinistra">◀</button>
+          <button data-hold="right" aria-label="destra">▶</button>
         </div>
         <div class="touch-actions">
-          <button data-action="attack" class="attack">⚔</button>
-          <button data-action="jump" class="jump">↑</button>
+          <button data-action="attack" class="attack" aria-label="attacca">⚔</button>
+          <button data-action="jump" class="jump" aria-label="salta">↑</button>
         </div>
       </div>
       <div id="tip">A/D o ←/→ muovi · Spazio salta · Ctrl/X attacca · Esc pausa</div>
@@ -67,6 +67,7 @@
     <button id="closeControls" class="primary">Chiudi</button>
   </dialog>
 
-  <script type="module" src="game.js"></script>
+  <script type="module" src="game.js?v=2"></script>
+  <script src="input-fix.js?v=2"></script>
 </body>
 </html>

@@ -1,0 +1,11 @@
+{
+  "name": "Corsair Cat — Web Remake",
+  "short_name": "Corsair Cat",
+  "start_url": "./",
+  "scope": "./",
+  "display": "fullscreen",
+  "background_color": "#070b11",
+  "theme_color": "#0b1018",
+  "orientation": "landscape",
+  "description": "Original clean-room pirate platformer prototype for the web."
+}

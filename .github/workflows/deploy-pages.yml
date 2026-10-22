@@ -79,6 +79,24 @@ jobs:
           touch _site/.nojekyll
           rm -f _site/CLAW.REZ _site/CLAW_ASSETS.ZIP
 
+          # The upstream service worker uses a fixed cache version. Because this
+          # project rebuilds from a pinned upstream commit, that would cause
+          # mobile browsers to keep serving stale game-init/asset-loader files.
+          # Stamp every deploy with this repository commit so a new SW purges
+          # the previous shell cache automatically.
+          python3 - <<'PY'
+          from pathlib import Path
+          import os, re
+          p = Path('_site/sw.js')
+          s = p.read_text(encoding='utf-8')
+          tag = 'port-' + os.environ['GITHUB_SHA'][:12]
+          s, n = re.subn(r'const CACHE_VERSION = "[^"]+";', f'const CACHE_VERSION = "{tag}";', s, count=1)
+          if n != 1:
+              raise SystemExit('Could not stamp service-worker cache version')
+          p.write_text(s, encoding='utf-8', newline='\n')
+          print('Service-worker cache version:', tag)
+          PY
+
           cat > _site/PORT_INFO.txt <<'EOF'
           Capitan Artiglio Web
 
@@ -96,6 +114,7 @@ jobs:
           test -s _site/index.html
           grep -q 'CLAW_ASSETS.ZIP' _site/asset-loader.js
           grep -q "hasFile('CLAW_ASSETS.ZIP')" _site/game-init.js
+          grep -q "port-${GITHUB_SHA:0:12}" _site/sw.js
           if find _site -type f \( -iname 'CLAW.REZ' -o -iname 'CLAW_ASSETS.ZIP' \) | grep -q .; then
             echo 'ERROR: copyrighted game-data archive must not be deployed.' >&2
             exit 1

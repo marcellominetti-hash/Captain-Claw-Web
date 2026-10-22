@@ -53,6 +53,7 @@ jobs:
           python3 scripts/patch_render_path_normalization.py upstream
           python3 scripts/patch_wasm_level_loading.py upstream
           python3 scripts/patch_actor_diagnostics.py upstream
+          python3 scripts/patch_tileplane_diagnostics.py upstream
           grep -q 'ResourceZipArchive(rezArchivePath)' upstream/OpenClaw/Engine/GameApp/BaseGameApp.cpp
           grep -q 'NormalizeZipPath' upstream/OpenClaw/Engine/Resource/ZipFile.cpp
           grep -q 'normalizedImagePath' upstream/OpenClaw/Engine/Actor/Components/RenderComponent.cpp
@@ -60,6 +61,7 @@ jobs:
           grep -q '__setClawLoadStatus' upstream/OpenClaw/Engine/GameApp/BaseGameLogic.cpp
           grep -q 'PortActorStatus' upstream/OpenClaw/Engine/Actor/ActorFactory.cpp
           grep -q 'PortRenderStatus' upstream/OpenClaw/Engine/Actor/Components/RenderComponent.cpp
+          grep -q 'Plane TilePlane: geometry ready' upstream/OpenClaw/Engine/Actor/Components/RenderComponent.cpp
           grep -q 'id="portLoadStatus"' upstream/Build_Release/claw-web.html
 
       - name: Install Emscripten SDK
@@ -100,11 +102,9 @@ jobs:
           wasm_name = f'openclaw-{version}.wasm'
           data_name = f'openclaw-{version}.data'
 
-          # Physical versioned runtime binaries: no query strings on WASM/data.
           shutil.copy2(root / 'openclaw.wasm', root / wasm_name)
           shutil.copy2(root / 'openclaw.data', root / data_name)
 
-          # New service-worker namespace for every deploy.
           sw = root / 'sw.js'
           text = sw.read_text(encoding='utf-8')
           text, n = re.subn(
@@ -117,7 +117,6 @@ jobs:
               raise SystemExit('Could not stamp service-worker cache version')
           sw.write_text(text, encoding='utf-8')
 
-          # Version ES-module imports.
           import_re = re.compile(r"""(from\s+['"])(\./[^'"]+?\.js)(['"])""")
           side_re = re.compile(r"""(import\s+['"])(\./[^'"]+?\.js)(['"])""")
           for p in root.rglob('*.js'):
@@ -128,7 +127,6 @@ jobs:
               js = side_re.sub(lambda m: m.group(1) + m.group(2) + '?v=' + version + m.group(3), js)
               p.write_text(js, encoding='utf-8')
 
-          # Replace the query-string binary cache busting with real filenames.
           locator_re = re.compile(
               r"""        locateFile: function \(path, prefix\) \{.*?        \},""",
               re.S,

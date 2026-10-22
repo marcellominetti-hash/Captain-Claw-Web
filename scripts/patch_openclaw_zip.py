@@ -31,7 +31,10 @@ for rel in ['OpenClaw/Engine/GameApp/BaseGameApp.h', 'Build_Release/config.xml']
 # from CLAW.REZ to an extracted-data ZIP.
 loader_path = 'Build_Release/asset-loader.js'
 loader = read(loader_path).replace('CLAW.REZ', 'CLAW_ASSETS.ZIP')
-loader = loader.replace(r'/^CLAW\\.REZ$/i', r'/^CLAW_ASSETS\\.ZIP$/i')
+
+# The JS source escapes the dot with ONE backslash. The previous patch looked
+# for two backslashes, so Android kept validating CLAW_ASSETS.ZIP as CLAW.REZ.
+loader = loader.replace(r'/^CLAW\.REZ$/i', r'/^CLAW_ASSETS\.ZIP$/i')
 
 loader = re.sub(
     r"// CLAW_ASSETS\.ZIP is a Monolith resource archive\..*?const REZ_MAX_SIZE = .*?;\s*",
@@ -66,15 +69,38 @@ loader = loader.replace('hasRezSignature(file)', 'hasZipSignature(file)')
 loader = loader.replace('about 113MB', 'the extracted game-data archive')
 loader = loader.replace('from the original Captain Claw (1997) game', 'prepared from your Captain Claw game files')
 loader = loader.replace('missing the expected archive header', 'missing the expected ZIP header')
+
+# Fail the build rather than shipping a first-run picker that silently rejects
+# the ZIP. There are two filename checks: selection and upload re-validation.
+zip_name_check = r'/^CLAW_ASSETS\.ZIP$/i'
+if loader.count(zip_name_check) < 2:
+    raise SystemExit('CLAW_ASSETS.ZIP filename validator was not patched correctly')
+if r'/^CLAW\.REZ$/i' in loader:
+    raise SystemExit('Legacy CLAW.REZ filename validator still present')
 write(loader_path, loader)
 
-# Keep all browser-side cache checks/storage documentation aligned with the new
-# filename, otherwise returning users would be prompted on every launch.
-for rel in ['Build_Release/game-init.js', 'Build_Release/asset-storage.js']:
-    if (root / rel).exists():
-        write(rel, read(rel).replace('CLAW.REZ', 'CLAW_ASSETS.ZIP'))
+# Keep browser-side cache checks/storage aligned with the new filename.
+game_init_path = 'Build_Release/game-init.js'
+game_init = read(game_init_path).replace('CLAW.REZ', 'CLAW_ASSETS.ZIP')
 
-# First-run page: same upstream UI and game bridges, just the new archive type.
+# On first run the upstream upload card starts hidden and only appears after an
+# async IndexedDB bootstrap. If that bootstrap stalls/fails on mobile, the user
+# sees a totally black page. Our HTML shows the picker immediately; hide it only
+# when the ZIP is already cached, then continue with the normal play overlay.
+init_needle = "    const hasCached = await checkClawRezCached();\n\n    let success;"
+init_replacement = """    const hasCached = await checkClawRezCached();\n\n    if (hasCached) {\n      const upload = document.getElementById('assetUpload');\n      if (upload) upload.style.display = 'none';\n    }\n\n    let success;"""
+if init_needle not in game_init:
+    raise SystemExit('game-init.js cache-check insertion point not found')
+game_init = game_init.replace(init_needle, init_replacement, 1)
+write(game_init_path, game_init)
+
+asset_storage_path = 'Build_Release/asset-storage.js'
+if (root / asset_storage_path).exists():
+    write(asset_storage_path, read(asset_storage_path).replace('CLAW.REZ', 'CLAW_ASSETS.ZIP'))
+
+# First-run page: same upstream UI and game bridges, but the ZIP picker is
+# visible immediately so a failed storage/bootstrap step can never look like a
+# dead black page.
 html_path = 'Build_Release/claw-web.html'
 html = read(html_path).replace('CLAW.REZ', 'CLAW_ASSETS.ZIP')
 html = html.replace(
@@ -83,6 +109,16 @@ html = html.replace(
 )
 html = html.replace('<title>Claw Web</title>', '<title>Capitan Artiglio Web</title>')
 html = html.replace('Claw Web', 'Capitan Artiglio Web')
+html = html.replace('accept=".REZ,.rez"', 'accept=".ZIP,.zip,application/zip"')
+html = html.replace(
+    '<section id="assetUpload" class="onboard">',
+    '<section id="assetUpload" class="onboard" style="display:flex">',
+    1,
+)
+if 'accept=".ZIP,.zip,application/zip"' not in html:
+    raise SystemExit('ZIP file input accept filter was not patched')
+if '<section id="assetUpload" class="onboard" style="display:flex">' not in html:
+    raise SystemExit('First-run upload card was not made immediately visible')
 write(html_path, html)
 
 for rel in ['Build_Release/config_linux.xml', 'Build_Release/config_linux_release.xml']:

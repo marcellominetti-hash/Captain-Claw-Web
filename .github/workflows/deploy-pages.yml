@@ -1,4 +1,4 @@
-name: Deploy Corsair Cat Web Remake
+name: Build Capitan Artiglio Web
 
 on:
   push:
@@ -10,31 +10,98 @@ permissions:
   pages: write
   id-token: write
 
+concurrency:
+  group: captain-claw-pages
+  cancel-in-progress: true
+
+env:
+  CLAW_WEB_REPO: https://github.com/arthurboss/claw-web.git
+  CLAW_WEB_COMMIT: e723d3d48b5ba2cc723751209954cfc46c82d202
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
-      - name: Checkout
+      - name: Checkout launcher/patches
         uses: actions/checkout@v4
 
-      - name: Validate autonomous web build
+      - name: Install build prerequisites
         shell: bash
         run: |
           set -euo pipefail
-          test -s web/index.html
-          test -s web/styles.css
-          test -s web/game.js
-          test -s web/manifest.webmanifest
-          test -s web/sw.js
-          if find web -type f -iname 'CLAW.REZ' | grep -q .; then
-            echo 'ERROR: proprietary game archive must not be deployed.' >&2
+          sudo apt-get update
+          sudo apt-get install -y zip unzip make python3-pip
+          python3 -m pip install --user 'cmake==4.3.2'
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Fetch pinned Claw Web source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init upstream
+          git -C upstream remote add origin "$CLAW_WEB_REPO"
+          git -C upstream fetch --depth=1 origin "$CLAW_WEB_COMMIT"
+          git -C upstream checkout --detach FETCH_HEAD
+
+      - name: Patch primary resource source to extracted ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/patch_openclaw_zip.py upstream
+          grep -q 'ResourceZipArchive(rezArchivePath)' upstream/OpenClaw/Engine/GameApp/BaseGameApp.cpp
+          grep -q 'CLAW_ASSETS.ZIP' upstream/Build_Release/config.xml
+          grep -q 'CLAW_ASSETS.ZIP' upstream/Build_Release/asset-loader.js
+
+      - name: Install Emscripten SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth=1 https://github.com/emscripten-core/emsdk.git upstream/emsdk
+          cd upstream/emsdk
+          ./emsdk install latest
+          ./emsdk activate latest
+
+      - name: Build WebAssembly engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd upstream
+          source ./emsdk/emsdk_env.sh
+          cmake --version
+          emcc --version
+          ./build_wasm.sh
+
+      - name: Assemble GitHub Pages site
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p _site
+          rsync -a upstream/Build_Release/ _site/
+          cp _site/claw-web.html _site/index.html
+          touch _site/.nojekyll
+          rm -f _site/CLAW.REZ _site/CLAW_ASSETS.ZIP
+
+          cat > _site/PORT_INFO.txt <<'EOF'
+          Capitan Artiglio Web
+
+          Browser engine: OpenClaw / claw-web (GNU GPL v3)
+          This build changes the primary game-data archive from CLAW.REZ to
+          CLAW_ASSETS.ZIP, using OpenClaw's existing ResourceZipArchive backend.
+
+          Original Captain Claw game data is NOT hosted by this site.
+          The user imports CLAW_ASSETS.ZIP locally; it is stored in browser IndexedDB.
+          EOF
+
+          test -s _site/openclaw.wasm
+          test -s _site/openclaw.js
+          test -s _site/openclaw.data
+          test -s _site/index.html
+          grep -q 'CLAW_ASSETS.ZIP' _site/asset-loader.js
+          if find _site -type f \( -iname 'CLAW.REZ' -o -iname 'CLAW_ASSETS.ZIP' \) | grep -q .; then
+            echo 'ERROR: copyrighted game-data archive must not be deployed.' >&2
             exit 1
           fi
-          if grep -RqiE 'openclaw\.(wasm|data)|arthurboss.github.io' web; then
-            echo 'ERROR: remake must not depend on the old OpenClaw runtime.' >&2
-            exit 1
-          fi
-          touch web/.nojekyll
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
@@ -42,7 +109,7 @@ jobs:
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: web
+          path: _site
 
   deploy:
     environment:

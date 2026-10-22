@@ -48,7 +48,11 @@ jobs:
           grep -q 'ResourceZipArchive(rezArchivePath)' upstream/OpenClaw/Engine/GameApp/BaseGameApp.cpp
           grep -q 'CLAW_ASSETS.ZIP' upstream/Build_Release/config.xml
           grep -q "hasFile('CLAW_ASSETS.ZIP')" upstream/Build_Release/game-init.js
-          grep -q 'CLAW_ASSETS.ZIP' upstream/Build_Release/asset-loader.js
+          grep -q "file.name.match(/\\^CLAW_ASSETS\\\\.ZIP\\$/i)" upstream/Build_Release/asset-loader.js
+          grep -q "storeFile('CLAW_ASSETS.ZIP'" upstream/Build_Release/asset-loader.js
+          ! grep -q "file.name.match(/\\^CLAW\\\\.REZ\\$/i)" upstream/Build_Release/asset-loader.js
+          ! grep -q "storeFile('CLAW.REZ'" upstream/Build_Release/asset-loader.js
+          ! grep -q "That file is not CLAW.REZ" upstream/Build_Release/asset-loader.js
 
       - name: Install Emscripten SDK
         shell: bash
@@ -79,22 +83,52 @@ jobs:
           touch _site/.nojekyll
           rm -f _site/CLAW.REZ _site/CLAW_ASSETS.ZIP
 
-          # The upstream service worker uses a fixed cache version. Because this
-          # project rebuilds from a pinned upstream commit, that would cause
-          # mobile browsers to keep serving stale game-init/asset-loader files.
-          # Stamp every deploy with this repository commit so a new SW purges
-          # the previous shell cache automatically.
+          # Stamp service-worker cache and hard-version every JS URL/import.
+          # This prevents an already-active older service worker on Android from
+          # serving an old asset-loader.js under a new HTML page.
           python3 - <<'PY'
           from pathlib import Path
           import os, re
-          p = Path('_site/sw.js')
-          s = p.read_text(encoding='utf-8')
-          tag = 'port-' + os.environ['GITHUB_SHA'][:12]
+
+          root = Path('_site')
+          version = os.environ['GITHUB_SHA'][:12]
+          tag = 'port-' + version
+
+          # 1) New SW cache namespace per deploy.
+          sw = root / 'sw.js'
+          s = sw.read_text(encoding='utf-8')
           s, n = re.subn(r'const CACHE_VERSION = "[^"]+";', f'const CACHE_VERSION = "{tag}";', s, count=1)
           if n != 1:
               raise SystemExit('Could not stamp service-worker cache version')
-          p.write_text(s, encoding='utf-8', newline='\n')
+          sw.write_text(s, encoding='utf-8', newline='\n')
+
+          # 2) Version ES-module imports so an old SW cannot satisfy them from
+          # an unversioned cache entry.
+          import_re = re.compile(r"(from\\s+['\"])(\\./[^'\"]+?\\.js)(['\"])")
+          side_effect_re = re.compile(r"(import\\s+['\"])(\\./[^'\"]+?\\.js)(['\"])")
+          for p in root.rglob('*.js'):
+              if p.name == 'sw.js':
+                  continue
+              text = p.read_text(encoding='utf-8')
+              text = import_re.sub(lambda m: m.group(1) + m.group(2) + '?v=' + version + m.group(3), text)
+              text = side_effect_re.sub(lambda m: m.group(1) + m.group(2) + '?v=' + version + m.group(3), text)
+              p.write_text(text, encoding='utf-8', newline='\n')
+
+          # 3) Version every JS reference in both entry HTML files, including
+          # the dynamically injected openclaw.js runtime.
+          for name in ('index.html', 'claw-web.html'):
+              p = root / name
+              text = p.read_text(encoding='utf-8')
+              text = re.sub(
+                  r'(?P<prefix>(?:src|href)=["\'])(?P<url>[^"\']+?\\.js)(?P<suffix>["\'])',
+                  lambda m: m.group('prefix') + m.group('url') + '?v=' + version + m.group('suffix'),
+                  text,
+              )
+              text = text.replace('script.src = "openclaw.js";', f'script.src = "openclaw.js?v={version}";')
+              p.write_text(text, encoding='utf-8', newline='\n')
+
           print('Service-worker cache version:', tag)
+          print('Browser JS asset version:', version)
           PY
 
           cat > _site/PORT_INFO.txt <<'EOF'
@@ -114,6 +148,12 @@ jobs:
           test -s _site/index.html
           grep -q 'CLAW_ASSETS.ZIP' _site/asset-loader.js
           grep -q "hasFile('CLAW_ASSETS.ZIP')" _site/game-init.js
+          grep -q "file.name.match(/\\^CLAW_ASSETS\\\\.ZIP\\$/i)" _site/asset-loader.js
+          grep -q "storeFile('CLAW_ASSETS.ZIP'" _site/asset-loader.js
+          ! grep -q "That file is not CLAW.REZ" _site/asset-loader.js
+          grep -q "game-init.js?v=${GITHUB_SHA:0:12}" _site/index.html
+          grep -q "asset-loader.js?v=${GITHUB_SHA:0:12}" _site/game-init.js
+          grep -q "openclaw.js?v=${GITHUB_SHA:0:12}" _site/index.html
           grep -q "port-${GITHUB_SHA:0:12}" _site/sw.js
           if find _site -type f \( -iname 'CLAW.REZ' -o -iname 'CLAW_ASSETS.ZIP' \) | grep -q .; then
             echo 'ERROR: copyrighted game-data archive must not be deployed.' >&2

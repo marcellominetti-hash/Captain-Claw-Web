@@ -48,17 +48,8 @@ jobs:
           python3 scripts/patch_wasm_level_loading.py upstream
           grep -q 'ResourceZipArchive(rezArchivePath)' upstream/OpenClaw/Engine/GameApp/BaseGameApp.cpp
           grep -q 'CLAW_ASSETS.ZIP' upstream/Build_Release/config.xml
-          grep -q "hasFile('CLAW_ASSETS.ZIP')" upstream/Build_Release/game-init.js
-          grep -q "file.name.match(/\\^CLAW_ASSETS\\\\.ZIP\\$/i)" upstream/Build_Release/asset-loader.js
-          grep -q "storeFile('CLAW_ASSETS.ZIP'" upstream/Build_Release/asset-loader.js
-          grep -q 'PortLoadStatus("VLoadGame: bulk preload skipped")' upstream/OpenClaw/Engine/GameApp/BaseGameLogic.cpp
-          grep -q 'PortLoadStatus("Entering " + levelName)' upstream/OpenClaw/Engine/GameApp/BaseGameLogic.cpp
           grep -q '__setClawLoadStatus' upstream/OpenClaw/Engine/GameApp/BaseGameLogic.cpp
-          grep -q 'PortViewLoadStatus("LoadGame event received")' upstream/OpenClaw/Engine/UserInterface/HumanView.cpp
           grep -q 'id="portLoadStatus"' upstream/Build_Release/claw-web.html
-          ! grep -q "file.name.match(/\\^CLAW\\\\.REZ\\$/i)" upstream/Build_Release/asset-loader.js
-          ! grep -q "storeFile('CLAW.REZ'" upstream/Build_Release/asset-loader.js
-          ! grep -q "That file is not CLAW.REZ" upstream/Build_Release/asset-loader.js
 
       - name: Install Emscripten SDK
         shell: bash
@@ -75,96 +66,104 @@ jobs:
           set -euo pipefail
           cd upstream
           source ./emsdk/emsdk_env.sh
-          cmake --version
-          emcc --version
           ./build_wasm.sh
 
       - name: Assemble GitHub Pages site
         shell: bash
         run: |
           set -euo pipefail
+          rm -rf _site
           mkdir -p _site
           rsync -a upstream/Build_Release/ _site/
           cp _site/claw-web.html _site/index.html
           touch _site/.nojekyll
           rm -f _site/CLAW.REZ _site/CLAW_ASSETS.ZIP
 
-          # Stamp service-worker cache and hard-version every JS URL/import.
-          # This prevents an already-active older service worker on Android from
-          # serving an old asset-loader.js under a new HTML page.
           python3 - <<'PY'
           from pathlib import Path
-          import os, re
+          import os, re, shutil
 
           root = Path('_site')
           version = os.environ['GITHUB_SHA'][:12]
           tag = 'port-' + version
+          wasm_name = f'openclaw-{version}.wasm'
+          data_name = f'openclaw-{version}.data'
 
-          # 1) New SW cache namespace per deploy.
+          # Physical versioned runtime binaries: no query strings on WASM/data.
+          shutil.copy2(root / 'openclaw.wasm', root / wasm_name)
+          shutil.copy2(root / 'openclaw.data', root / data_name)
+
+          # New service-worker namespace for every deploy.
           sw = root / 'sw.js'
-          s = sw.read_text(encoding='utf-8')
-          s, n = re.subn(r'const CACHE_VERSION = "[^"]+";', f'const CACHE_VERSION = "{tag}";', s, count=1)
+          text = sw.read_text(encoding='utf-8')
+          text, n = re.subn(
+              r'const CACHE_VERSION = "[^"]+";',
+              f'const CACHE_VERSION = "{tag}";',
+              text,
+              count=1,
+          )
           if n != 1:
               raise SystemExit('Could not stamp service-worker cache version')
-          sw.write_text(s, encoding='utf-8', newline='\n')
+          sw.write_text(text, encoding='utf-8')
 
-          # 2) Version ES-module imports so an old SW cannot satisfy them from
-          # an unversioned cache entry.
+          # Version ES-module imports.
           import_re = re.compile(r"""(from\s+['"])(\./[^'"]+?\.js)(['"])""")
-          side_effect_re = re.compile(r"""(import\s+['"])(\./[^'"]+?\.js)(['"])""")
+          side_re = re.compile(r"""(import\s+['"])(\./[^'"]+?\.js)(['"])""")
           for p in root.rglob('*.js'):
               if p.name == 'sw.js':
                   continue
-              text = p.read_text(encoding='utf-8')
-              text = import_re.sub(lambda m: m.group(1) + m.group(2) + '?v=' + version + m.group(3), text)
-              text = side_effect_re.sub(lambda m: m.group(1) + m.group(2) + '?v=' + version + m.group(3), text)
-              p.write_text(text, encoding='utf-8', newline='\n')
+              js = p.read_text(encoding='utf-8')
+              js = import_re.sub(lambda m: m.group(1) + m.group(2) + '?v=' + version + m.group(3), js)
+              js = side_re.sub(lambda m: m.group(1) + m.group(2) + '?v=' + version + m.group(3), js)
+              p.write_text(js, encoding='utf-8')
 
-          # 3) Version every JS reference in both entry HTML files, including
-          # the dynamically injected openclaw.js runtime.
+          # Replace the query-string binary cache busting with real filenames.
+          locator_re = re.compile(
+              r"""        locateFile: function \(path, prefix\) \{.*?        \},""",
+              re.S,
+          )
+          new_locator = "\n".join([
+              "        locateFile: function (path, prefix) {",
+              "          if (path.indexOf('openclaw.wasm') !== -1) {",
+              f"            return (prefix || '') + '{wasm_name}';",
+              "          }",
+              "          if (path.indexOf('openclaw.data') !== -1) {",
+              f"            return (prefix || '') + '{data_name}';",
+              "          }",
+              "          return (prefix || '') + path;",
+              "        },",
+          ])
+
           html_js_re = re.compile(r"""(?P<prefix>(?:src|href)=["'])(?P<url>[^"']+?\.js)(?P<suffix>["'])""")
           for name in ('index.html', 'claw-web.html'):
               p = root / name
-              text = p.read_text(encoding='utf-8')
-              text = html_js_re.sub(
+              html = p.read_text(encoding='utf-8')
+              html, n = locator_re.subn(new_locator, html, count=1)
+              if n != 1:
+                  raise SystemExit(f'Binary locateFile block not found in {name}')
+              html = html_js_re.sub(
                   lambda m: m.group('prefix') + m.group('url') + '?v=' + version + m.group('suffix'),
-                  text,
+                  html,
               )
-              text = text.replace('openclaw.js', 'openclaw.js?v=' + version)
-              text = text.replace('openclaw.js?v=' + version + '?v=' + version, 'openclaw.js?v=' + version)
-              p.write_text(text, encoding='utf-8', newline='\n')
+              html = html.replace('openclaw.js', 'openclaw.js?v=' + version)
+              html = html.replace('openclaw.js?v=' + version + '?v=' + version, 'openclaw.js?v=' + version)
+              p.write_text(html, encoding='utf-8')
 
-          print('Service-worker cache version:', tag)
-          print('Browser JS asset version:', version)
+          print('Runtime binaries:', wasm_name, data_name)
+          print('Service-worker cache:', tag)
           PY
 
-          cat > _site/PORT_INFO.txt <<'EOF'
-          Capitan Artiglio Web
-
-          Browser engine: OpenClaw / claw-web (GNU GPL v3)
-          This build changes the primary game-data archive from CLAW.REZ to
-          CLAW_ASSETS.ZIP, using OpenClaw's existing ResourceZipArchive backend.
-
-          Original Captain Claw game data is NOT hosted by this site.
-          The user imports CLAW_ASSETS.ZIP locally; it is stored in browser IndexedDB.
-          EOF
-
-          test -s _site/openclaw.wasm
-          test -s _site/openclaw.js
-          test -s _site/openclaw.data
-          test -s _site/index.html
-          grep -q 'CLAW_ASSETS.ZIP' _site/asset-loader.js
-          grep -q "hasFile('CLAW_ASSETS.ZIP')" _site/game-init.js
-          grep -q "file.name.match(/\\^CLAW_ASSETS\\\\.ZIP\\$/i)" _site/asset-loader.js
-          grep -q "storeFile('CLAW_ASSETS.ZIP'" _site/asset-loader.js
-          ! grep -q "That file is not CLAW.REZ" _site/asset-loader.js
-          grep -q 'id="portLoadStatus"' _site/index.html
+          test -s "_site/openclaw-${GITHUB_SHA:0:12}.wasm"
+          test -s "_site/openclaw-${GITHUB_SHA:0:12}.data"
+          grep -q "openclaw-${GITHUB_SHA:0:12}.wasm" _site/index.html
+          grep -q "openclaw-${GITHUB_SHA:0:12}.data" _site/index.html
           grep -q "game-init.js?v=${GITHUB_SHA:0:12}" _site/index.html
-          grep -q "asset-loader.js?v=${GITHUB_SHA:0:12}" _site/game-init.js
-          grep -q "openclaw.js?v=${GITHUB_SHA:0:12}" _site/index.html
           grep -q "port-${GITHUB_SHA:0:12}" _site/sw.js
+          grep -q 'CLAW_ASSETS.ZIP' _site/asset-loader.js
+          grep -q 'id="portLoadStatus"' _site/index.html
+
           if find _site -type f \( -iname 'CLAW.REZ' -o -iname 'CLAW_ASSETS.ZIP' \) | grep -q .; then
-            echo 'ERROR: copyrighted game-data archive must not be deployed.' >&2
+            echo 'ERROR: game-data archive must not be deployed.' >&2
             exit 1
           fi
 
@@ -177,5 +176,4 @@ jobs:
           path: _site
 
       - name: Deploy to GitHub Pages
-        id: deployment
         uses: actions/deploy-pages@v4

@@ -10,10 +10,6 @@ permissions:
   pages: write
   id-token: write
 
-concurrency:
-  group: captain-claw-pages
-  cancel-in-progress: true
-
 env:
   CLAW_WEB_REPO: https://github.com/arthurboss/claw-web.git
   CLAW_WEB_COMMIT: e723d3d48b5ba2cc723751209954cfc46c82d202

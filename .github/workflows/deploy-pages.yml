@@ -64,7 +64,8 @@ jobs:
           test "$(git hash-object _site/openclaw.data)" = "45ebec8d48167c768f24be3a024069904c0aa08c"
           test "$(git hash-object _site/openclaw.wasm)" = "5222291f652b3f85e0c5d6b67f46263e2d004330"
           grep -q 'CLAW.REZ' _site/asset-loader.js
-          grep -q 'const CACHE_VERSION = "v14"' _site/sw.js
+          # Root production SW is v13; ee504 only bumps staging/sw.js to v14.
+          grep -q 'const CACHE_VERSION = "v13"' _site/sw.js
 
           if find _site -type f \( -iname 'CLAW.REZ' -o -iname 'CLAW_ASSETS.ZIP' \) | grep -q .; then
             echo 'ERROR: original game archive must not be deployed.' >&2

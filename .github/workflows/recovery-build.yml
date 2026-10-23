@@ -52,6 +52,8 @@ jobs:
           grep -q '_matchCache.find(patternCopy)' upstream/OpenClaw/Engine/Resource/ResourceCache.cpp
           grep -q 'addRunDependency(dependency)' upstream/Build_Release/asset-loader.js
           grep -q 'CLAW_ASSETS.ZIP' upstream/Build_Release/config.xml
+          node --input-type=module --check < upstream/Build_Release/asset-loader.js
+          node --input-type=module --check < upstream/Build_Release/game-init.js
 
           if grep -q "FS.writeFile('/CLAW_ASSETS.ZIP'" upstream/Build_Release/asset-loader.js; then
             echo 'ERROR: whole-file asset copy is still present' >&2

@@ -1,0 +1,101 @@
+name: Clean baseline diagnostics preview
+
+on:
+  push:
+    branches:
+      - clean-baseline-v1
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+env:
+  UPSTREAM_REPO: https://github.com/arthurboss/claw-web.git
+  UPSTREAM_PUBLISHED_COMMIT: ee5041244d7a6903f95523ddfc35eebeb0754f4f
+
+jobs:
+  assemble:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout diagnostics branch
+        uses: actions/checkout@v4
+
+      - name: Fetch exact upstream published runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init upstream-runtime
+          git -C upstream-runtime remote add origin "$UPSTREAM_REPO"
+          git -C upstream-runtime fetch --depth=1 origin "$UPSTREAM_PUBLISHED_COMMIT"
+          git -C upstream-runtime checkout --detach FETCH_HEAD
+
+          # Exact runtime hashes already used by the production baseline.
+          test "$(git hash-object upstream-runtime/openclaw.js)" = "f76a4d004a69442d88c89a531155f15aa1dfd360"
+          test "$(git hash-object upstream-runtime/openclaw.data)" = "45ebec8d48167c768f24be3a024069904c0aa08c"
+          test "$(git hash-object upstream-runtime/openclaw.wasm)" = "5222291f652b3f85e0c5d6b67f46263e2d004330"
+          grep -q 'CLAW.REZ' upstream-runtime/asset-loader.js
+          grep -q 'ASSETS.ZIP' upstream-runtime/config.xml
+
+      - name: Assemble production root and clean baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf _site baseline-site
+          mkdir -p _site baseline-site
+
+          # Preserve the root exactly as the known upstream published runtime.
+          git -C upstream-runtime archive HEAD | tar -x -C _site
+          touch _site/.nojekyll
+
+          # Create an isolated preview from the same exact runtime.
+          git -C upstream-runtime archive HEAD | tar -x -C baseline-site
+          python3 scripts/inject_clean_diagnostics.py baseline-site
+
+          mkdir -p _site/baseline
+          rsync -a baseline-site/ _site/baseline/
+
+          # No copyrighted game archive is ever published.
+          rm -f _site/CLAW.REZ _site/baseline/CLAW.REZ
+
+          # Root remains byte-identical for the three engine binaries.
+          test "$(git hash-object _site/openclaw.js)" = "f76a4d004a69442d88c89a531155f15aa1dfd360"
+          test "$(git hash-object _site/openclaw.data)" = "45ebec8d48167c768f24be3a024069904c0aa08c"
+          test "$(git hash-object _site/openclaw.wasm)" = "5222291f652b3f85e0c5d6b67f46263e2d004330"
+
+          # Baseline engine binaries are also exactly upstream; only diagnostics differ.
+          test "$(git hash-object _site/baseline/openclaw.js)" = "f76a4d004a69442d88c89a531155f15aa1dfd360"
+          test "$(git hash-object _site/baseline/openclaw.data)" = "45ebec8d48167c768f24be3a024069904c0aa08c"
+          test "$(git hash-object _site/baseline/openclaw.wasm)" = "5222291f652b3f85e0c5d6b67f46263e2d004330"
+          grep -q 'clean-diagnostics.js' _site/baseline/index.html
+          grep -q 'primary_archive=CLAW.REZ' _site/baseline/CLEAN_BASELINE.txt
+          node --check _site/baseline/clean-diagnostics.js
+
+          if find _site -type f -iname 'CLAW.REZ' | grep -q .; then
+            echo 'ERROR: CLAW.REZ must never be deployed' >&2
+            exit 1
+          fi
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: assemble
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    steps:
+      - name: Deploy root plus clean baseline preview
+        id: deployment
+        uses: actions/deploy-pages@v4

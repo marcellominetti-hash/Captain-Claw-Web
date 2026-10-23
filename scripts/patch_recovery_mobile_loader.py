@@ -337,7 +337,7 @@ loader = read(loader_path).replace("CLAW.REZ", "CLAW_ASSETS.ZIP")
 
 # Validation becomes ZIP signature + broad extracted-data size bounds.
 loader = re.sub(
-    r"const REZ_VALID_SIGNATURES = .*?const REZ_MAX_SIZE = .*?;\n",
+    r"const REZ_VALID_SIGNATURES = [^\n]+\nconst REZ_MIN_SIZE = [^\n]+\nconst REZ_MAX_SIZE = [^\n]+\n",
     """const REZ_MIN_SIZE = 10 * 1024 * 1024;
 const REZ_MAX_SIZE = 512 * 1024 * 1024;
 """,
@@ -501,7 +501,7 @@ checks = {
     logic_cpp_path: ["emscripten_sleep(0)", "m_bResetLevelPending"],
     event_path: ["Nested EventMgr::VUpdate request ignored"],
     cache_cpp_path: ["_matchCache.find(patternCopy)", "emscripten_sleep(0)"],
-    loader_path: ["clawRezBlob", "addRunDependency(dependency)", "CLAW_ASSETS.ZIP"],
+    loader_path: ["clawRezBlob", "addRunDependency(dependency)", "CLAW_ASSETS.ZIP", "function showUploadError(message)"],
 }
 for rel, needles in checks.items():
     text = read(rel)

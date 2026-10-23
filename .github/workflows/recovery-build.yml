@@ -52,7 +52,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/patch_recovery_mobile_loader.py upstream
-          python3 scripts/fix_recovery_zip_filename_validation.py upstream
+          python3 scripts/patch_recovery_upload_gate.py upstream
 
           grep -q 'ResourceZipArchive(rezArchivePath)' upstream/OpenClaw/Engine/GameApp/BaseGameApp.cpp
           grep -q 'm_bResetLevelPending' upstream/OpenClaw/Engine/GameApp/BaseGameLogic.cpp
@@ -60,11 +60,12 @@ jobs:
           grep -q '_matchCache.find(patternCopy)' upstream/OpenClaw/Engine/Resource/ResourceCache.cpp
           grep -q 'addRunDependency(dependency)' upstream/Build_Release/asset-loader.js
           grep -q 'CLAW_ASSETS.ZIP' upstream/Build_Release/config.xml
-          grep -Fq '/^CLAW_ASSETS\.ZIP$/i' upstream/Build_Release/asset-loader.js
-          if grep -Fq '/^CLAW\.REZ$/i' upstream/Build_Release/asset-loader.js; then
-            echo 'ERROR: legacy CLAW.REZ filename validator remains' >&2
+          grep -q 'hasZipSignature(file)' upstream/Build_Release/asset-loader.js
+          if grep -q 'file.name.match' upstream/Build_Release/asset-loader.js; then
+            echo 'ERROR: filename-based upload validator remains' >&2
             exit 1
           fi
+          grep -q 'CACHE_VERSION = "recovery-v2-1"' upstream/Build_Release/sw.js
           node --input-type=module --check < upstream/Build_Release/asset-loader.js
           node --input-type=module --check < upstream/Build_Release/game-init.js
 
@@ -100,23 +101,26 @@ jobs:
           cp recovery-site/claw-web.html recovery-site/index.html
           touch recovery-site/.nojekyll
 
-          # User-supplied Captain Claw game data is never committed/published.
           rm -f recovery-site/CLAW.REZ recovery-site/CLAW_ASSETS.ZIP
 
           cat > recovery-site/RECOVERY_BUILD.txt <<EOF
           branch=recovery/mobile-loader-v1
           repository_commit=${GITHUB_SHA}
           upstream_commit=${CLAW_WEB_COMMIT}
-          archive=CLAW_ASSETS.ZIP
+          archive=ZIP-content-validated
           actor_batch=20
           mount_chunk_bytes=2097152
+          preview_scope=recovery-v2
           EOF
 
           test -s recovery-site/openclaw.js
           test -s recovery-site/openclaw.wasm
           test -s recovery-site/openclaw.data
-          grep -q 'CLAW_ASSETS.ZIP' recovery-site/asset-loader.js
-          grep -Fq '/^CLAW_ASSETS\.ZIP$/i' recovery-site/asset-loader.js
+          grep -q 'hasZipSignature(file)' recovery-site/asset-loader.js
+          if grep -q 'file.name.match' recovery-site/asset-loader.js; then
+            echo 'ERROR: filename gate survived into recovery artifact' >&2
+            exit 1
+          fi
           node --input-type=module --check < recovery-site/asset-loader.js
           node --input-type=module --check < recovery-site/game-init.js
 
@@ -148,28 +152,27 @@ jobs:
           rm -rf _site
           mkdir -p _site
 
-          # Root is exported verbatim from the exact production snapshot used by main.
           git -C production-site archive HEAD | tar -x -C _site
           touch _site/.nojekyll
 
-          # Recovery is isolated below /recovery/ with relative URLs and its own SW scope.
-          mkdir -p _site/recovery
-          rsync -a recovery-site/ _site/recovery/
+          mkdir -p _site/recovery-v2
+          rsync -a recovery-site/ _site/recovery-v2/
 
           rm -f _site/CLAW.REZ _site/CLAW_ASSETS.ZIP
-          rm -f _site/recovery/CLAW.REZ _site/recovery/CLAW_ASSETS.ZIP
+          rm -f _site/recovery-v2/CLAW.REZ _site/recovery-v2/CLAW_ASSETS.ZIP
 
-          # Prove the public root has not changed from the production runtime.
           test "$(git hash-object _site/openclaw.js)" = "f76a4d004a69442d88c89a531155f15aa1dfd360"
           test "$(git hash-object _site/openclaw.data)" = "45ebec8d48167c768f24be3a024069904c0aa08c"
           test "$(git hash-object _site/openclaw.wasm)" = "5222291f652b3f85e0c5d6b67f46263e2d004330"
           grep -q 'CLAW.REZ' _site/asset-loader.js
 
-          # Prove preview is the recovery build and remains self-contained.
-          grep -q 'CLAW_ASSETS.ZIP' _site/recovery/asset-loader.js
-          grep -Fq '/^CLAW_ASSETS\.ZIP$/i' _site/recovery/asset-loader.js
-          grep -q 'actor_batch=20' _site/recovery/RECOVERY_BUILD.txt
-          test -s _site/recovery/openclaw.wasm
+          grep -q 'hasZipSignature(file)' _site/recovery-v2/asset-loader.js
+          if grep -q 'file.name.match' _site/recovery-v2/asset-loader.js; then
+            echo 'ERROR: filename gate survived into deployed preview' >&2
+            exit 1
+          fi
+          grep -q 'preview_scope=recovery-v2' _site/recovery-v2/RECOVERY_BUILD.txt
+          test -s _site/recovery-v2/openclaw.wasm
 
           if find _site -type f \( -iname 'CLAW.REZ' -o -iname 'CLAW_ASSETS.ZIP' \) | grep -q .; then
             echo 'ERROR: user game data must not be deployed.' >&2
@@ -191,6 +194,6 @@ jobs:
       id-token: write
     runs-on: ubuntu-latest
     steps:
-      - name: Deploy production root plus recovery preview
+      - name: Deploy production root plus recovery-v2 preview
         id: deployment
         uses: actions/deploy-pages@v4

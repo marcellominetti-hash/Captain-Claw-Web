@@ -1,0 +1,111 @@
+name: Recovery mobile loader build
+
+on:
+  push:
+    branches:
+      - recovery/mobile-loader-v1
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CLAW_WEB_REPO: https://github.com/arthurboss/claw-web.git
+  CLAW_WEB_COMMIT: e723d3d48b5ba2cc723751209954cfc46c82d202
+
+jobs:
+  build-recovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout recovery branch
+        uses: actions/checkout@v4
+
+      - name: Install build prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y zip unzip make python3-pip rsync
+          python3 -m pip install --user 'cmake==4.3.2'
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Fetch pinned upstream source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init upstream
+          git -C upstream remote add origin "$CLAW_WEB_REPO"
+          git -C upstream fetch --depth=1 origin "$CLAW_WEB_COMMIT"
+          git -C upstream checkout --detach FETCH_HEAD
+
+      - name: Apply minimal recovery patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/patch_recovery_mobile_loader.py upstream
+
+          grep -q 'ResourceZipArchive(rezArchivePath)' upstream/OpenClaw/Engine/GameApp/BaseGameApp.cpp
+          grep -q 'm_bResetLevelPending' upstream/OpenClaw/Engine/GameApp/BaseGameLogic.cpp
+          grep -q 'emscripten_sleep(0)' upstream/OpenClaw/Engine/GameApp/BaseGameLogic.cpp
+          grep -q '_matchCache.find(patternCopy)' upstream/OpenClaw/Engine/Resource/ResourceCache.cpp
+          grep -q 'addRunDependency(dependency)' upstream/Build_Release/asset-loader.js
+          grep -q 'CLAW_ASSETS.ZIP' upstream/Build_Release/config.xml
+
+          if grep -q "FS.writeFile('/CLAW_ASSETS.ZIP'" upstream/Build_Release/asset-loader.js; then
+            echo 'ERROR: whole-file asset copy is still present' >&2
+            exit 1
+          fi
+
+      - name: Install Emscripten SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth=1 https://github.com/emscripten-core/emsdk.git upstream/emsdk
+          cd upstream/emsdk
+          ./emsdk install latest
+          ./emsdk activate latest
+
+      - name: Build WebAssembly recovery engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd upstream
+          source ./emsdk/emsdk_env.sh
+          ./build_wasm.sh
+
+      - name: Assemble recovery artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf recovery-site
+          mkdir -p recovery-site
+          rsync -a upstream/Build_Release/ recovery-site/
+          cp recovery-site/claw-web.html recovery-site/index.html
+          touch recovery-site/.nojekyll
+
+          # User-supplied Captain Claw game data is never committed/published.
+          rm -f recovery-site/CLAW.REZ recovery-site/CLAW_ASSETS.ZIP
+
+          cat > recovery-site/RECOVERY_BUILD.txt <<EOF
+          branch=recovery/mobile-loader-v1
+          repository_commit=${GITHUB_SHA}
+          upstream_commit=${CLAW_WEB_COMMIT}
+          archive=CLAW_ASSETS.ZIP
+          actor_batch=20
+          mount_chunk_bytes=2097152
+          EOF
+
+          test -s recovery-site/openclaw.js
+          test -s recovery-site/openclaw.wasm
+          test -s recovery-site/openclaw.data
+          grep -q 'CLAW_ASSETS.ZIP' recovery-site/asset-loader.js
+
+      - name: Upload recovery site artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: captain-claw-recovery-site
+          path: recovery-site/
+          if-no-files-found: error
+          retention-days: 7

@@ -52,6 +52,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/patch_recovery_mobile_loader.py upstream
+          python3 scripts/fix_recovery_zip_filename_validation.py upstream
 
           grep -q 'ResourceZipArchive(rezArchivePath)' upstream/OpenClaw/Engine/GameApp/BaseGameApp.cpp
           grep -q 'm_bResetLevelPending' upstream/OpenClaw/Engine/GameApp/BaseGameLogic.cpp
@@ -59,6 +60,11 @@ jobs:
           grep -q '_matchCache.find(patternCopy)' upstream/OpenClaw/Engine/Resource/ResourceCache.cpp
           grep -q 'addRunDependency(dependency)' upstream/Build_Release/asset-loader.js
           grep -q 'CLAW_ASSETS.ZIP' upstream/Build_Release/config.xml
+          grep -Fq '/^CLAW_ASSETS\.ZIP$/i' upstream/Build_Release/asset-loader.js
+          if grep -Fq '/^CLAW\.REZ$/i' upstream/Build_Release/asset-loader.js; then
+            echo 'ERROR: legacy CLAW.REZ filename validator remains' >&2
+            exit 1
+          fi
           node --input-type=module --check < upstream/Build_Release/asset-loader.js
           node --input-type=module --check < upstream/Build_Release/game-init.js
 
@@ -110,6 +116,7 @@ jobs:
           test -s recovery-site/openclaw.wasm
           test -s recovery-site/openclaw.data
           grep -q 'CLAW_ASSETS.ZIP' recovery-site/asset-loader.js
+          grep -Fq '/^CLAW_ASSETS\.ZIP$/i' recovery-site/asset-loader.js
           node --input-type=module --check < recovery-site/asset-loader.js
           node --input-type=module --check < recovery-site/game-init.js
 
@@ -160,6 +167,7 @@ jobs:
 
           # Prove preview is the recovery build and remains self-contained.
           grep -q 'CLAW_ASSETS.ZIP' _site/recovery/asset-loader.js
+          grep -Fq '/^CLAW_ASSETS\.ZIP$/i' _site/recovery/asset-loader.js
           grep -q 'actor_batch=20' _site/recovery/RECOVERY_BUILD.txt
           test -s _site/recovery/openclaw.wasm
 

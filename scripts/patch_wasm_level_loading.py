@@ -170,4 +170,30 @@ if human.count('PortViewLoadStatus(') < 5:
 if 'clawLastLoadStatus' not in html:
     raise SystemExit('Persistent browser loading diagnostic was not injected')
 
-print('WASM non-blocking loading + persistent phone diagnostics patch applied successfully.')
+# ResourceCache::Match performs a complete archive scan for every wildcard
+# lookup. Level loading creates many actors of the same prototypes, so the same
+# patterns (for example /LEVEL1/ANIS/RAT/*) are evaluated repeatedly. Cache
+# immutable match results per ResourceCache instance to turn those repeats into
+# inexpensive map lookups without changing resource or gameplay semantics.
+cache_h_path = root / 'OpenClaw/Engine/Resource/ResourceCache.h'
+cache_h = cache_h_path.read_text(encoding='utf-8')
+cache_member_anchor = '''    ResourceHandleList _lruList;\n    ResourceLoaderList _resourceLoaderList;\n    ResourceHandleMap _resourceMap;\n};\n'''
+cache_member_repl = '''    ResourceHandleList _lruList;\n    ResourceLoaderList _resourceLoaderList;\n    ResourceHandleMap _resourceMap;\n    std::map<std::string, std::vector<std::string>> _matchCache;\n};\n'''
+if cache_member_anchor not in cache_h:
+    raise SystemExit('ResourceCache member anchor not found')
+cache_h = cache_h.replace(cache_member_anchor, cache_member_repl, 1)
+cache_h_path.write_text(cache_h, encoding='utf-8', newline='\n')
+
+cache_cpp_path = root / 'OpenClaw/Engine/Resource/ResourceCache.cpp'
+cache_cpp = cache_cpp_path.read_text(encoding='utf-8')
+match_old = '''std::vector<std::string> ResourceCache::Match(const std::string pattern)\n{\n    std::vector<std::string> matchingNames;\n\n    if (_resourceFile == NULL)\n    {\n        return matchingNames;\n    }\n\n    // Everything is converted into lower case so maintain consistency\n    std::string patternCopy = pattern;\n    std::transform(patternCopy.begin(), patternCopy.end(), patternCopy.begin(), (int(*)(int)) std::tolower);\n\n    uint32 numFiles = _resourceFile->VGetNumResources();\n    for (uint32 fileIdx = 0; fileIdx < numFiles; ++fileIdx)\n    {\n        std::string fileNamePath = _resourceFile->VGetResourceName(fileIdx);\n        // Everything is converted into lower case so maintain consistency\n        std::transform(fileNamePath.begin(), fileNamePath.end(), fileNamePath.begin(), (int(*)(int)) std::tolower);\n\n        //std::cout << "Filename: " << fileNamePath << ", Pattern: " << pattern << std::endl;\n\n        if (WildcardMatch(patternCopy.c_str(), fileNamePath.c_str()))\n        {\n            matchingNames.push_back(fileNamePath);\n        }\n    }\n\n    return matchingNames;\n}\n'''
+match_new = '''std::vector<std::string> ResourceCache::Match(const std::string pattern)\n{\n    std::vector<std::string> matchingNames;\n\n    if (_resourceFile == NULL)\n    {\n        return matchingNames;\n    }\n\n    // Everything is converted into lower case so maintain consistency.\n    // Match results depend only on the immutable archive and pattern, so cache\n    // them for repeated actor-prototype lookups during level construction.\n    std::string patternCopy = pattern;\n    std::transform(patternCopy.begin(), patternCopy.end(), patternCopy.begin(), (int(*)(int)) std::tolower);\n\n    auto cachedMatch = _matchCache.find(patternCopy);\n    if (cachedMatch != _matchCache.end())\n    {\n        return cachedMatch->second;\n    }\n\n    uint32 numFiles = _resourceFile->VGetNumResources();\n    for (uint32 fileIdx = 0; fileIdx < numFiles; ++fileIdx)\n    {\n        std::string fileNamePath = _resourceFile->VGetResourceName(fileIdx);\n        // Everything is converted into lower case so maintain consistency\n        std::transform(fileNamePath.begin(), fileNamePath.end(), fileNamePath.begin(), (int(*)(int)) std::tolower);\n\n        if (WildcardMatch(patternCopy.c_str(), fileNamePath.c_str()))\n        {\n            matchingNames.push_back(fileNamePath);\n        }\n    }\n\n    _matchCache[patternCopy] = matchingNames;\n    return matchingNames;\n}\n'''
+if match_old not in cache_cpp:
+    raise SystemExit('ResourceCache::Match anchor not found')
+cache_cpp = cache_cpp.replace(match_old, match_new, 1)
+cache_cpp_path.write_text(cache_cpp, encoding='utf-8', newline='\n')
+
+if '_matchCache.find(patternCopy)' not in cache_cpp or '_matchCache' not in cache_h:
+    raise SystemExit('ResourceCache match memoization was not injected')
+
+print('WASM persistent diagnostics + ResourceCache Match memoization applied successfully.')

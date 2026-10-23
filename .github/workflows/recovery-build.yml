@@ -8,10 +8,17 @@ on:
 
 permissions:
   contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
 
 env:
   CLAW_WEB_REPO: https://github.com/arthurboss/claw-web.git
   CLAW_WEB_COMMIT: e723d3d48b5ba2cc723751209954cfc46c82d202
+  CLAW_WEB_PAGES_COMMIT: ee5041244d7a6903f95523ddfc35eebeb0754f4f
 
 jobs:
   build-recovery:
@@ -103,6 +110,8 @@ jobs:
           test -s recovery-site/openclaw.wasm
           test -s recovery-site/openclaw.data
           grep -q 'CLAW_ASSETS.ZIP' recovery-site/asset-loader.js
+          node --input-type=module --check < recovery-site/asset-loader.js
+          node --input-type=module --check < recovery-site/game-init.js
 
       - name: Upload recovery site artifact
         uses: actions/upload-artifact@v4
@@ -111,3 +120,72 @@ jobs:
           path: recovery-site/
           if-no-files-found: error
           retention-days: 7
+
+      - name: Fetch exact production runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init production-site
+          git -C production-site remote add origin "$CLAW_WEB_REPO"
+          git -C production-site fetch --depth=1 origin "$CLAW_WEB_PAGES_COMMIT"
+          git -C production-site checkout --detach FETCH_HEAD
+
+          test "$(git hash-object production-site/openclaw.js)" = "f76a4d004a69442d88c89a531155f15aa1dfd360"
+          test "$(git hash-object production-site/openclaw.data)" = "45ebec8d48167c768f24be3a024069904c0aa08c"
+          test "$(git hash-object production-site/openclaw.wasm)" = "5222291f652b3f85e0c5d6b67f46263e2d004330"
+
+      - name: Assemble production plus isolated preview
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf _site
+          mkdir -p _site
+
+          # Root is exported verbatim from the exact production snapshot used by main.
+          git -C production-site archive HEAD | tar -x -C _site
+          touch _site/.nojekyll
+
+          # Recovery is isolated below /recovery/ with relative URLs and its own SW scope.
+          mkdir -p _site/recovery
+          rsync -a recovery-site/ _site/recovery/
+
+          rm -f _site/CLAW.REZ _site/CLAW_ASSETS.ZIP
+          rm -f _site/recovery/CLAW.REZ _site/recovery/CLAW_ASSETS.ZIP
+
+          # Prove the public root has not changed from the production runtime.
+          test "$(git hash-object _site/openclaw.js)" = "f76a4d004a69442d88c89a531155f15aa1dfd360"
+          test "$(git hash-object _site/openclaw.data)" = "45ebec8d48167c768f24be3a024069904c0aa08c"
+          test "$(git hash-object _site/openclaw.wasm)" = "5222291f652b3f85e0c5d6b67f46263e2d004330"
+          grep -q 'CLAW.REZ' _site/asset-loader.js
+
+          # Prove preview is the recovery build and remains self-contained.
+          grep -q 'CLAW_ASSETS.ZIP' _site/recovery/asset-loader.js
+          grep -q 'actor_batch=20' _site/recovery/RECOVERY_BUILD.txt
+          test -s _site/recovery/openclaw.wasm
+
+          if find _site -type f \( -iname 'CLAW.REZ' -o -iname 'CLAW_ASSETS.ZIP' \) | grep -q .; then
+            echo 'ERROR: user game data must not be deployed.' >&2
+            exit 1
+          fi
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy-preview:
+    needs: build-recovery
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}recovery/
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy production root plus recovery preview
+        id: deployment
+        uses: actions/deploy-pages@v4

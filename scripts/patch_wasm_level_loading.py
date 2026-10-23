@@ -151,11 +151,13 @@ for old, new in handoff_repls:
     human = human.replace(old, new, 1)
 human_path.write_text(human, encoding='utf-8', newline='\n')
 
-# Visible mobile diagnostic badge. It only appears once level loading starts.
+# Visible mobile diagnostic badge. It also persists the last executed status so
+# a browser that stops repainting during a long synchronous WASM call cannot
+# hide the real final milestone from the next page load.
 html_path = root / 'Build_Release/claw-web.html'
 html = html_path.read_text(encoding='utf-8')
 body_anchor = '  <body>\n'
-badge = '''  <body>\n    <div id="portLoadStatus" style="display:none;position:fixed;z-index:2147483647;left:50%;top:12px;transform:translateX(-50%);max-width:92vw;padding:8px 12px;border:1px solid #ffd166;border-radius:9px;background:rgba(0,0,0,.92);color:#ffd166;font:700 12px/1.3 monospace;text-align:center;pointer-events:none;box-shadow:0 2px 12px rgba(0,0,0,.55)"></div>\n    <script>\n      window.__setClawLoadStatus = function (message) {\n        var el = document.getElementById('portLoadStatus');\n        if (!el) return;\n        var text = String(message == null ? '' : message);\n        el.textContent = 'LOAD: ' + text;\n        el.style.display = 'block';\n        if (text.indexOf('LEVEL LOAD COMPLETE') !== -1) {\n          setTimeout(function () { el.style.display = 'none'; }, 1800);\n        }\n      };\n    </script>\n'''
+badge = '''  <body>\n    <div id="portLoadStatus" style="display:none;position:fixed;z-index:2147483647;left:50%;top:12px;transform:translateX(-50%);max-width:92vw;padding:8px 12px;border:1px solid #ffd166;border-radius:9px;background:rgba(0,0,0,.92);color:#ffd166;font:700 12px/1.3 monospace;text-align:center;pointer-events:none;box-shadow:0 2px 12px rgba(0,0,0,.55)"></div>\n    <script>\n      (function () {\n        try {\n          var previous = localStorage.getItem('clawLastLoadStatus');\n          if (previous && previous.indexOf('LEVEL LOAD COMPLETE') === -1) {\n            var el = document.getElementById('portLoadStatus');\n            if (el) {\n              el.textContent = 'PREV LOAD: ' + previous;\n              el.style.display = 'block';\n            }\n          }\n        } catch (e) {}\n      })();\n      window.__setClawLoadStatus = function (message) {\n        var el = document.getElementById('portLoadStatus');\n        var text = String(message == null ? '' : message);\n        try {\n          localStorage.setItem('clawLastLoadStatus', text);\n          localStorage.setItem('clawLastLoadStatusAt', String(Date.now()));\n        } catch (e) {}\n        if (!el) return;\n        el.textContent = 'LOAD: ' + text;\n        el.style.display = 'block';\n        if (text.indexOf('LEVEL LOAD COMPLETE') !== -1) {\n          setTimeout(function () { el.style.display = 'none'; }, 1800);\n        }\n      };\n    </script>\n'''
 if body_anchor not in html:
     raise SystemExit('HTML body insertion point not found')
 html = html.replace(body_anchor, badge, 1)
@@ -165,5 +167,7 @@ if text.count('PortLoadStatus(') < 12:
     raise SystemExit('Expected C++ loading diagnostics were not injected')
 if human.count('PortViewLoadStatus(') < 5:
     raise SystemExit('Expected HumanView loading diagnostics were not injected')
+if 'clawLastLoadStatus' not in html:
+    raise SystemExit('Persistent browser loading diagnostic was not injected')
 
-print('WASM non-blocking loading + visible phone diagnostics patch applied successfully.')
+print('WASM non-blocking loading + persistent phone diagnostics patch applied successfully.')

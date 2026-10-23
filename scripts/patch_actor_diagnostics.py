@@ -4,7 +4,8 @@ import sys
 
 root = Path(sys.argv[1] if len(sys.argv) > 1 else '.').resolve()
 
-# Instrument ActorFactory so the phone shows the exact first component that stalls.
+# Instrument ActorFactory so the phone shows continuous actor progress and,
+# for the first actors, the exact component/subphase where loading stalls.
 actor_path = root / 'OpenClaw/Engine/Actor/ActorFactory.cpp'
 actor = actor_path.read_text(encoding='utf-8')
 
@@ -34,7 +35,7 @@ if helper_anchor not in actor:
 actor = actor.replace(helper_anchor, helper, 1)
 
 entry = '''StrongActorPtr ActorFactory::CreateActor(TiXmlElement* pActorRoot, TiXmlElement* overrides)\n{\n    //PROFILE_CPU("Create actor");\n    uint32 nextActorGUID = GetNextActorGUID();\n    StrongActorPtr actor(new Actor(nextActorGUID));\n    if (!actor->Init(pActorRoot))\n'''
-entry_repl = '''StrongActorPtr ActorFactory::CreateActor(TiXmlElement* pActorRoot, TiXmlElement* overrides)\n{\n    //PROFILE_CPU("Create actor");\n    uint32 nextActorGUID = GetNextActorGUID();\n    const char* portTypeRaw = pActorRoot ? pActorRoot->Attribute("Type") : nullptr;\n    std::string portType = portTypeRaw ? portTypeRaw : "(unknown)";\n    bool portDiag = (nextActorGUID <= 4);\n    if (portDiag) PortActorStatus("Actor " + std::to_string(nextActorGUID) + " [" + portType + "]: Actor::Init");\n    StrongActorPtr actor(new Actor(nextActorGUID));\n    if (!actor->Init(pActorRoot))\n'''
+entry_repl = '''StrongActorPtr ActorFactory::CreateActor(TiXmlElement* pActorRoot, TiXmlElement* overrides)\n{\n    //PROFILE_CPU("Create actor");\n    uint32 nextActorGUID = GetNextActorGUID();\n    const char* portTypeRaw = pActorRoot ? pActorRoot->Attribute("Type") : nullptr;\n    std::string portType = portTypeRaw ? portTypeRaw : "(unknown)";\n    bool portDiag = (nextActorGUID <= 64);\n    PortActorStatus("Actor " + std::to_string(nextActorGUID) + " [" + portType + "]: START");\n    StrongActorPtr actor(new Actor(nextActorGUID));\n    if (!actor->Init(pActorRoot))\n'''
 if entry not in actor:
     raise SystemExit('ActorFactory CreateActor entry anchor not found')
 actor = actor.replace(entry, entry_repl, 1)
@@ -45,16 +46,22 @@ if init_ready not in actor:
     raise SystemExit('ActorFactory component-loop anchor not found')
 actor = actor.replace(init_ready, init_ready_repl, 1)
 
+attach_anchor = '''        if (component)\n        {\n            actor->AddComponent(component);\n            component->SetOwner(actor);\n        }\n'''
+attach_repl = '''        if (component)\n        {\n            if (portDiag) PortActorStatus("Actor " + std::to_string(nextActorGUID) + " [" + portType + "]: " + portComponentName + " attach");\n            actor->AddComponent(component);\n            if (portDiag) PortActorStatus("Actor " + std::to_string(nextActorGUID) + " [" + portType + "]: " + portComponentName + " attached");\n            component->SetOwner(actor);\n            if (portDiag) PortActorStatus("Actor " + std::to_string(nextActorGUID) + " [" + portType + "]: " + portComponentName + " owner ready");\n        }\n'''
+if attach_anchor not in actor:
+    raise SystemExit('ActorFactory component attach anchor not found')
+actor = actor.replace(attach_anchor, attach_repl, 1)
+
 post = '''    // Place for some hacks\n\n    actor->PostInit();\n    actor->PostPostInit();\n\n    return actor;\n}\n'''
-post_repl = '''    // Place for some hacks\n\n    if (portDiag) PortActorStatus("Actor " + std::to_string(nextActorGUID) + " [" + portType + "]: PostInit");\n    actor->PostInit();\n    if (portDiag) PortActorStatus("Actor " + std::to_string(nextActorGUID) + " [" + portType + "]: PostInit ready");\n    actor->PostPostInit();\n    if (portDiag) PortActorStatus("Actor " + std::to_string(nextActorGUID) + " [" + portType + "]: COMPLETE");\n\n    return actor;\n}\n'''
+post_repl = '''    // Place for some hacks\n\n    PortActorStatus("Actor " + std::to_string(nextActorGUID) + " [" + portType + "]: PostInit");\n    actor->PostInit();\n    if (portDiag) PortActorStatus("Actor " + std::to_string(nextActorGUID) + " [" + portType + "]: PostInit ready");\n    actor->PostPostInit();\n    PortActorStatus("Actor " + std::to_string(nextActorGUID) + " [" + portType + "]: COMPLETE");\n\n    return actor;\n}\n'''
 if post not in actor:
     raise SystemExit('ActorFactory PostInit anchor not found')
 actor = actor.replace(post, post_repl, 1)
 actor_path.write_text(actor, encoding='utf-8', newline='\n')
 
-# Instrument BaseRenderComponent for Plane actors. The first WWD actor is a plane,
-# so this reveals whether the stall is directory enumeration, PID loading, or
-# TilePlaneRenderComponent::VDelegateInit.
+# Instrument BaseRenderComponent for Plane actors. The first WWD actors are
+# planes, so this reveals whether a stall is directory enumeration, PID loading,
+# or TilePlaneRenderComponent::VDelegateInit.
 render_path = root / 'OpenClaw/Engine/Actor/Components/RenderComponent.cpp'
 render = render_path.read_text(encoding='utf-8')
 
@@ -112,4 +119,4 @@ render_path.write_text(render, encoding='utf-8', newline='\n')
 if 'PortActorStatus' not in actor or 'PortRenderStatus' not in render:
     raise SystemExit('Actor/render diagnostics were not injected')
 
-print('ActorFactory + Plane RenderComponent diagnostics patch applied successfully.')
+print('Continuous ActorFactory + Plane RenderComponent diagnostics patch applied successfully.')

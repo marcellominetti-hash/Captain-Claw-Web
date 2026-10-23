@@ -1,4 +1,4 @@
-name: Build Capitan Artiglio Web
+name: Deploy Capitan Artiglio Web
 
 on:
   push:
@@ -16,102 +16,58 @@ concurrency:
 
 env:
   CLAW_WEB_REPO: https://github.com/arthurboss/claw-web.git
-  CLAW_WEB_COMMIT: e723d3d48b5ba2cc723751209954cfc46c82d202
+  # Exact upstream Pages snapshot already built and published by Claw Web.
+  # Pinning this commit also pins the matching JS/WASM/DATA triplet.
+  CLAW_WEB_PAGES_COMMIT: ee5041244d7a6903f95523ddfc35eebeb0754f4f
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 10
     steps:
       - name: Checkout deployment repo
         uses: actions/checkout@v4
 
-      - name: Install build prerequisites
+      - name: Fetch exact upstream published runtime
         shell: bash
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y zip unzip make python3-pip rsync
-          python3 -m pip install --user 'cmake==4.3.2'
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          git init upstream-site
+          git -C upstream-site remote add origin "$CLAW_WEB_REPO"
+          git -C upstream-site fetch --depth=1 origin "$CLAW_WEB_PAGES_COMMIT"
+          git -C upstream-site checkout --detach FETCH_HEAD
 
-      - name: Fetch pristine stable Claw Web source
-        shell: bash
-        run: |
-          set -euo pipefail
-          git init upstream
-          git -C upstream remote add origin "$CLAW_WEB_REPO"
-          git -C upstream fetch --depth=1 origin "$CLAW_WEB_COMMIT"
-          git -C upstream checkout --detach FETCH_HEAD
+          # Verify we fetched the exact tested binary set from upstream gh-pages.
+          test "$(git hash-object upstream-site/openclaw.js)" = "f76a4d004a69442d88c89a531155f15aa1dfd360"
+          test "$(git hash-object upstream-site/openclaw.data)" = "45ebec8d48167c768f24be3a024069904c0aa08c"
+          test "$(git hash-object upstream-site/openclaw.wasm)" = "5222291f652b3f85e0c5d6b67f46263e2d004330"
+          grep -q 'CLAW.REZ' upstream-site/asset-loader.js
+          grep -q 'touch-controls.js' upstream-site/index.html
 
-          # Golden-path validation: do not replace the tested REZ backend.
-          grep -q 'ResourceRezArchive(rezArchivePath)' upstream/OpenClaw/Engine/GameApp/BaseGameApp.cpp
-          grep -q 'CLAW.REZ' upstream/Build_Release/config.xml
-          grep -q 'CLAW.REZ' upstream/Build_Release/asset-loader.js
-          grep -q 'touch-controls.js' upstream/Build_Release/claw-web.html
-
-      - name: Install Emscripten SDK
-        shell: bash
-        run: |
-          set -euo pipefail
-          git clone --depth=1 https://github.com/emscripten-core/emsdk.git upstream/emsdk
-          cd upstream/emsdk
-          ./emsdk install latest
-          ./emsdk activate latest
-
-      - name: Build pristine WebAssembly engine
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd upstream
-          source ./emsdk/emsdk_env.sh
-          ./build_wasm.sh
-
-      - name: Assemble GitHub Pages site
+      - name: Assemble exact upstream GitHub Pages site
         shell: bash
         run: |
           set -euo pipefail
           rm -rf _site
           mkdir -p _site
-          rsync -a upstream/Build_Release/ _site/
-          cp _site/claw-web.html _site/index.html
+
+          # Export the already-built upstream gh-pages snapshot verbatim.
+          # No Emscripten, CMake, engine patch, JS rewrite or binary rename.
+          git -C upstream-site archive HEAD | tar -x -C _site
           touch _site/.nojekyll
 
-          # Never publish copyrighted game data. The upstream UI asks the user
-          # to import their own CLAW.REZ locally and stores it in IndexedDB.
+          # The original game archive must always be supplied locally by the player.
           rm -f _site/CLAW.REZ _site/CLAW_ASSETS.ZIP
 
-          # Force a fresh shell cache after this clean rebuild while otherwise
-          # leaving upstream HTML/JS/WASM untouched and version-compatible.
-          python3 - <<'PY'
-          from pathlib import Path
-          import os, re
-
-          sw = Path('_site/sw.js')
-          if sw.exists():
-              text = sw.read_text(encoding='utf-8')
-              version = 'clean-' + os.environ['GITHUB_SHA'][:12]
-              text2, n = re.subn(
-                  r'const CACHE_VERSION = ["\'][^"\']+["\'];',
-                  f'const CACHE_VERSION = "{version}";',
-                  text,
-                  count=1,
-              )
-              if n == 1:
-                  sw.write_text(text2, encoding='utf-8')
-                  print('Service-worker cache:', version)
-              else:
-                  print('CACHE_VERSION not found; leaving upstream service worker unchanged')
-          PY
-
-          test -s _site/openclaw.js
-          test -s _site/openclaw.wasm
-          test -s _site/openclaw.data
+          # Final integrity checks: JS/WASM/DATA must remain the exact upstream trio.
+          test "$(git hash-object _site/openclaw.js)" = "f76a4d004a69442d88c89a531155f15aa1dfd360"
+          test "$(git hash-object _site/openclaw.data)" = "45ebec8d48167c768f24be3a024069904c0aa08c"
+          test "$(git hash-object _site/openclaw.wasm)" = "5222291f652b3f85e0c5d6b67f46263e2d004330"
           grep -q 'CLAW.REZ' _site/asset-loader.js
-          grep -q 'touch-controls.js' _site/index.html
+          grep -q 'const CACHE_VERSION = "v14"' _site/sw.js
 
           if find _site -type f \( -iname 'CLAW.REZ' -o -iname 'CLAW_ASSETS.ZIP' \) | grep -q .; then
-            echo 'ERROR: game-data archive must not be deployed.' >&2
+            echo 'ERROR: original game archive must not be deployed.' >&2
             exit 1
           fi
 

@@ -22,13 +22,15 @@ old = '''  m_pResourceMgr = new ResourceMgrImpl();
   m_pResourceMgr->VAddResourceCache(m_pResourceCache);
 '''
 new = '''  // Optional APK-selected custom level archive. It is mounted before ASSETS.ZIP
-  // and CLAW.REZ so its WORLD.WWD overrides the original level slot.
+  // and CLAW.REZ so its WORLD.WWD overrides the original level slot. Keep a
+  // distinct cache name: startup tests explicitly address CUSTOM_RESOURCE and
+  // must continue to resolve to ASSETS.ZIP, not to the selected level pack.
   std::shared_ptr<ResourceCache> pSelectedLevelCache;
   {
     std::ifstream selectedLevelProbe("/CUSTOM_LEVEL.ZIP", std::ios::binary);
     if (selectedLevelProbe.good()) {
       IResourceFile *pSelectedLevelArchive = new ResourceZipArchive("/CUSTOM_LEVEL.ZIP");
-      pSelectedLevelCache.reset(new ResourceCache(80, pSelectedLevelArchive, CUSTOM_RESOURCE));
+      pSelectedLevelCache.reset(new ResourceCache(80, pSelectedLevelArchive, "SelectedLevel"));
       if (pSelectedLevelCache->Init()) {
         pSelectedLevelCache->RegisterLoader(DefaultResourceLoader::Create());
         pSelectedLevelCache->RegisterLoader(XmlResourceLoader::Create());

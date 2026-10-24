@@ -69,7 +69,10 @@ jobs:
       - name: Install build prerequisites
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake ninja-build python3 git zip
+          sudo apt-get install -y build-essential ninja-build python3 python3-pip git zip
+          python3 -m pip install --user --break-system-packages 'cmake>=4.3.2'
+          hash -r
+          cmake --version
 
       - name: Install Emscripten
         run: |
@@ -85,6 +88,7 @@ jobs:
           cd engine
           source ./emsdk/emsdk_env.sh
           chmod +x build_wasm.sh patch_sdl2_shaders.sh || true
+          cmake --version
           ./build_wasm.sh
 
       - name: Verify compatibility runtime

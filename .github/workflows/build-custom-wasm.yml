@@ -1,0 +1,96 @@
+name: Build Collection WASM runtime
+
+on:
+  push:
+    branches:
+      - android-custom-levels-v1
+    paths:
+      - 'scripts/patch_custom_level_cache.py'
+      - '.github/workflows/build-custom-wasm.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  UPSTREAM_REPO: https://github.com/arthurboss/claw-web.git
+  UPSTREAM_SOURCE_COMMIT: e723d3d48b5ba2cc723751209954cfc46c82d202
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout collection branch
+        uses: actions/checkout@v4
+
+      - name: Install host tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ninja-build zip unzip python3-pip
+          python3 -m pip install --user --upgrade cmake
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Fetch exact upstream source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --no-checkout "$UPSTREAM_REPO" upstream
+          git -C upstream checkout "$UPSTREAM_SOURCE_COMMIT"
+          test "$(git -C upstream rev-parse HEAD)" = "$UPSTREAM_SOURCE_COMMIT"
+
+      - name: Apply Collection engine patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp scripts/patch_custom_level_cache.py upstream/patch_custom_level_cache.py
+          cd upstream
+          python3 patch_custom_level_cache.py
+          grep -q 'CUSTOM_LEVEL_RESOURCE' OpenClaw/Engine/SharedDefines.h
+          grep -q 'CUSTOM_LEVEL.ZIP' OpenClaw/Engine/GameApp/BaseGameApp.cpp
+          grep -q 'GetResourceMgr()->VGetHandle' OpenClaw/Engine/Resource/Loaders/WwdLoader.cpp
+
+      - name: Install Emscripten SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth=1 https://github.com/emscripten-core/emsdk.git emsdk
+          ./emsdk/emsdk install latest
+          ./emsdk/emsdk activate latest
+
+      - name: Build patched WASM runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/emsdk/emsdk_env.sh"
+          cd upstream
+          chmod +x build_wasm.sh patch_sdl2_shaders.sh
+          ./build_wasm.sh
+          test -s Build_Release/openclaw.js
+          test -s Build_Release/openclaw.wasm
+          test -s Build_Release/openclaw.data
+
+      - name: Prepare runtime artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p collection-runtime
+          cp upstream/Build_Release/openclaw.js collection-runtime/
+          cp upstream/Build_Release/openclaw.wasm collection-runtime/
+          cp upstream/Build_Release/openclaw.data collection-runtime/
+          cp upstream/Build_Release/claw-web.html collection-runtime/index.html
+          for f in upstream/Build_Release/*.js upstream/Build_Release/*.css upstream/Build_Release/*.webmanifest upstream/Build_Release/*.png upstream/Build_Release/*.ico upstream/Build_Release/*.sf2; do
+            [ -e "$f" ] && cp "$f" collection-runtime/ || true
+          done
+          printf '%s\n' "$UPSTREAM_SOURCE_COMMIT" > collection-runtime/SOURCE_COMMIT.txt
+          sha256sum collection-runtime/openclaw.js collection-runtime/openclaw.wasm collection-runtime/openclaw.data > collection-runtime/SHA256SUMS.txt
+          du -h collection-runtime/openclaw.*
+
+      - name: Upload Collection runtime
+        uses: actions/upload-artifact@v4
+        with:
+          name: Capitan-Artiglio-Collection-runtime
+          path: collection-runtime/
+          if-no-files-found: error
+          retention-days: 7

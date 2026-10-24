@@ -122,6 +122,16 @@ jobs:
           grep -q 'ClawCustomLevels.mountSelected' "$WEBROOT/index.html"
           grep -q 'Collection v2 Android embedded CLAW.REZ bridge' "$WEBROOT/asset-loader.js"
 
+      - name: Apply Android touch-control settings
+        shell: bash
+        run: |
+          set -euo pipefail
+          MAIN=android/app/src/main/java/com/capitanartiglio/app/MainActivity.java
+          python3 scripts/patch_android_touch_settings.py "$MAIN"
+          grep -q 'Capitan Artiglio touch settings v1' "$MAIN"
+          grep -q 'applyTouchPreferencesToWeb' "$MAIN"
+          grep -q 'touch_scale_pct' "$MAIN"
+
       - name: Build Collection v2 base APK
         shell: bash
         run: gradle -p android :app:assembleDebug --stacktrace

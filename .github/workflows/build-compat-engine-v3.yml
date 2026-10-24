@@ -1,0 +1,112 @@
+name: Build OpenClaw Compat Engine v3
+
+on:
+  push:
+    branches: [compat-engine-v3]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-compat-engine:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout controller repo
+        uses: actions/checkout@v4
+
+      - name: Checkout exact claw-web source
+        run: |
+          git clone https://github.com/arthurboss/claw-web.git engine
+          git -C engine checkout e723d3d48b5ba2cc723751209954cfc46c82d202
+
+      - name: Apply custom-level compatibility patch
+        shell: python
+        run: |
+          from pathlib import Path
+
+          root = Path('engine')
+          conv = root / 'OpenClaw/Engine/Util/Converters.h'
+          actor = root / 'OpenClaw/Engine/Actor/ActorTemplates.cpp'
+
+          s = actor.read_text(encoding='utf-8')
+          old = '''        auto findIt = s_ImageSetToPickupTypeMap.find(pickupImageSet);\n        if (findIt == s_ImageSetToPickupTypeMap.end())\n        {\n            LOG_ERROR("Could not find requested enum. Offending key: " + pickupImageSet);\n            assert(false);\n        }\n\n        return findIt->second;'''
+          new = '''        auto findIt = s_ImageSetToPickupTypeMap.find(pickupImageSet);\n        if (findIt == s_ImageSetToPickupTypeMap.end())\n        {\n            LOG_WARNING("[COMPAT] Unknown pickup image set: " + pickupImageSet + " - deferring to WWD logic fallback");\n            return PickupType_None;\n        }\n\n        return findIt->second;'''
+          if old not in s:
+              raise SystemExit('ActorTemplates pickup enum patch anchor not found')
+          actor.write_text(s.replace(old, new, 1), encoding='utf-8')
+
+          s = conv.read_text(encoding='utf-8')
+
+          old = '''inline ElevatorStepDef GetElevatorStepDef(int moveType, int value)\n{\n    assert(moveType >= 1 && moveType <= 9);\n    assert(value > 0);'''
+          new = '''inline ElevatorStepDef GetElevatorStepDef(int moveType, int value)\n{\n    if (moveType < 1 || moveType > 9 || value <= 0)\n    {\n        LOG_WARNING("[COMPAT] Invalid PathElevator step; converting to safe wait step");\n        moveType = 5;\n        value = 60000;\n    }'''
+          if old not in s:
+              raise SystemExit('GetElevatorStepDef patch anchor not found')
+          s = s.replace(old, new, 1)
+
+          old = '''        assert(pathElevatorDef.elevatorPath.size() >= 1);\n\n        Point position(wwdObject->x, wwdObject->y);'''
+          new = '''        if (pathElevatorDef.elevatorPath.empty())\n        {\n            LOG_WARNING("[COMPAT] Empty PathElevator path; converting to stationary platform");\n            pathElevatorDef.elevatorPath.push_back(GetElevatorStepDef(5, 60000));\n        }\n\n        Point position(wwdObject->x, wwdObject->y);'''
+          if old not in s:
+              raise SystemExit('PathElevator empty-path patch anchor not found')
+          s = s.replace(old, new, 1)
+
+          old = '''        SAFE_DELETE(pActorElem);\n\n        ParamMap paramMap;'''
+          new = '''        ParamMap paramMap;'''
+          if old not in s:
+              raise SystemExit('Pickup SAFE_DELETE patch anchor not found')
+          s = s.replace(old, new, 1)
+
+          old = '''        PickupType pickupType = ActorTemplates::StringToEnum_ImageSetToPickupType(wwdObject->imageSet);\n\n        return ActorTemplates::CreateXmlData_PickupActor(pickupType, Point(wwdObject->x, wwdObject->y), true, paramMap);'''
+          new = '''        PickupType pickupType = ActorTemplates::StringToEnum_ImageSetToPickupType(wwdObject->imageSet);\n\n        // Fan-made WWDs often reuse pickup logic with arbitrary image sets.\n        // OpenClaw historically asserted here and aborted the whole WASM runtime.\n        // Compatibility mode preserves rendering for non-critical unknown objects,\n        // while providing functional fallbacks for progression-critical pickups.\n        if (pickupType == PickupType_None)\n        {\n            if (logic == "EndOfLevelPowerup")\n            {\n                LOG_WARNING("[COMPAT] Unknown end-level pickup " + imageSet + " -> Mappiece fallback");\n                pickupType = PickupType_Mappiece;\n            }\n            else if (logic == "BossWarp")\n            {\n                LOG_WARNING("[COMPAT] Unknown boss warp " + imageSet + " -> BossWarp fallback");\n                pickupType = PickupType_BossWarp;\n                paramMap["IsGlitter"] = "false";\n                paramMap["DestinationX"] = ToStr(wwdObject->speedX);\n                paramMap["DestinationY"] = ToStr(wwdObject->speedY);\n            }\n            else if (logic == "HealthPowerup")\n            {\n                LOG_WARNING("[COMPAT] Unknown health pickup " + imageSet + " -> 5 HP fallback");\n                pickupType = PickupType_Health_Breadwater;\n            }\n            else if (logic == "AmmoPowerup")\n            {\n                if (imageSet.find("DYNAMITE") != std::string::npos)\n                    pickupType = PickupType_Ammo_Dynamite;\n                else if (imageSet.find("MAGIC") != std::string::npos)\n                    pickupType = PickupType_Ammo_Magic_5;\n                else\n                    pickupType = PickupType_Ammo_Shot;\n                LOG_WARNING("[COMPAT] Unknown ammo pickup " + imageSet + " -> safe ammo fallback");\n            }\n            else if (logic == "MagicPowerup")\n            {\n                pickupType = PickupType_Ammo_Magic_5;\n                LOG_WARNING("[COMPAT] Unknown magic pickup " + imageSet + " -> magic ammo fallback");\n            }\n            else\n            {\n                LOG_WARNING("[COMPAT] Unsupported pickup visual/logic kept as render-only actor: " + logic + " / " + imageSet);\n                return pActorElem;\n            }\n        }\n\n        SAFE_DELETE(pActorElem);\n        return ActorTemplates::CreateXmlData_PickupActor(pickupType, Point(wwdObject->x, wwdObject->y), true, paramMap);'''
+          if old not in s:
+              raise SystemExit('Pickup conversion patch anchor not found')
+          conv.write_text(s.replace(old, new, 1), encoding='utf-8')
+
+          print('Compatibility patch applied successfully')
+
+      - name: Install build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build python3 git zip
+
+      - name: Install Emscripten
+        run: |
+          git clone --depth=1 https://github.com/emscripten-core/emsdk.git engine/emsdk
+          cd engine/emsdk
+          ./emsdk install latest
+          ./emsdk activate latest
+
+      - name: Build patched WASM runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd engine
+          source ./emsdk/emsdk_env.sh
+          chmod +x build_wasm.sh patch_sdl2_shaders.sh || true
+          ./build_wasm.sh
+
+      - name: Verify compatibility runtime
+        run: |
+          set -euo pipefail
+          test -s engine/Build_Release/openclaw.wasm
+          test -s engine/Build_Release/openclaw.js
+          test -s engine/Build_Release/openclaw.data
+          grep -q '\[COMPAT\] Unknown pickup image set' engine/OpenClaw/Engine/Actor/ActorTemplates.cpp
+          grep -q '\[COMPAT\] Empty PathElevator path' engine/OpenClaw/Engine/Util/Converters.h
+          sha256sum engine/Build_Release/openclaw.wasm engine/Build_Release/openclaw.js engine/Build_Release/openclaw.data > engine/Build_Release/compat-sha256.txt
+          cat engine/Build_Release/compat-sha256.txt
+
+      - name: Upload patched runtime
+        uses: actions/upload-artifact@v4
+        with:
+          name: openclaw-compat-v3
+          path: |
+            engine/Build_Release/openclaw.wasm
+            engine/Build_Release/openclaw.js
+            engine/Build_Release/openclaw.data
+            engine/Build_Release/ASSETS.ZIP
+            engine/Build_Release/compat-sha256.txt
+          if-no-files-found: error
+          retention-days: 7

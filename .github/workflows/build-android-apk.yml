@@ -81,22 +81,31 @@ jobs:
           source ./emsdk/emsdk_env.sh
           ./build_wasm.sh
 
-      - name: Assemble Android web assets
+      - name: Assemble Android Collection web assets
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf android/app/src/main/assets/www
-          mkdir -p android/app/src/main/assets/www
-          rsync -a upstream/Build_Release/ android/app/src/main/assets/www/
-          cp android/app/src/main/assets/www/claw-web.html android/app/src/main/assets/www/index.html
+          WEBROOT=android/app/src/main/assets/www
+          rm -rf "$WEBROOT"
+          mkdir -p "$WEBROOT"
+          rsync -a upstream/Build_Release/ "$WEBROOT/"
+
+          # Collection v2 shell: a lightweight library page and preRun loader.
+          cp android/collection-web/levels.html "$WEBROOT/levels.html"
+          cp android/collection-web/custom-levels.js "$WEBROOT/custom-levels.js"
+          mkdir -p "$WEBROOT/custom-levels"
+          cp android/collection-web/custom-levels/manifest.json "$WEBROOT/custom-levels/manifest.json"
+
+          python3 scripts/inject_collection_v2_runtime.py "$WEBROOT/claw-web.html"
+          cp "$WEBROOT/claw-web.html" "$WEBROOT/index.html"
 
           # Service workers are unnecessary inside WebViewAssetLoader.
-          printf '%s\n' '// Service worker disabled inside Android APK.' > android/app/src/main/assets/www/sw-register.js
+          printf '%s\n' '// Service worker disabled inside Android APK.' > "$WEBROOT/sw-register.js"
 
           # Proprietary/user-supplied content is injected only into the private final build.
-          rm -f android/app/src/main/assets/www/CLAW.REZ
-          rm -f android/app/src/main/assets/www/CUSTOM_LEVEL.ZIP
-          rm -f android/app/src/main/assets/www/CUSTOM_LEVEL.NUM
+          rm -f "$WEBROOT/CLAW.REZ"
+          rm -f "$WEBROOT/CUSTOM_LEVEL.ZIP"
+          rm -f "$WEBROOT/CUSTOM_LEVEL.NUM"
           if find android/app/src/main/assets -type f -iname 'CLAW.REZ' | grep -q .; then
             echo 'ERROR: CLAW.REZ must not be published by CI' >&2
             exit 1
@@ -105,9 +114,12 @@ jobs:
           mkdir -p android/app/src/main/res/drawable
           cp upstream/Build_Release/android-chrome-192x192.png android/app/src/main/res/drawable/icon.png
 
-          test -s android/app/src/main/assets/www/openclaw.js
-          test -s android/app/src/main/assets/www/openclaw.wasm
-          test -s android/app/src/main/assets/www/openclaw.data
+          test -s "$WEBROOT/openclaw.js"
+          test -s "$WEBROOT/openclaw.wasm"
+          test -s "$WEBROOT/openclaw.data"
+          test -s "$WEBROOT/levels.html"
+          grep -q 'custom-levels.js' "$WEBROOT/index.html"
+          grep -q 'ClawCustomLevels.mountSelected' "$WEBROOT/index.html"
 
       - name: Build Collection v2 base APK
         shell: bash
@@ -120,6 +132,8 @@ jobs:
           APK=android/app/build/outputs/apk/debug/app-debug.apk
           test -s "$APK"
           unzip -t "$APK" >/dev/null
+          unzip -l "$APK" | grep -q 'assets/www/levels.html'
+          unzip -l "$APK" | grep -q 'assets/www/custom-levels.js'
           if unzip -l "$APK" | grep -qi 'CLAW.REZ'; then
             echo 'ERROR: CI base APK contains CLAW.REZ' >&2
             exit 1

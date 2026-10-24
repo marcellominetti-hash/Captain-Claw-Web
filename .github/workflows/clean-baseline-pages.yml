@@ -35,49 +35,48 @@ jobs:
           git -C upstream-runtime fetch --depth=1 origin "$UPSTREAM_PUBLISHED_COMMIT"
           git -C upstream-runtime checkout --detach FETCH_HEAD
 
-          # Exact runtime hashes already used by the production baseline.
           test "$(git hash-object upstream-runtime/openclaw.js)" = "f76a4d004a69442d88c89a531155f15aa1dfd360"
           test "$(git hash-object upstream-runtime/openclaw.data)" = "45ebec8d48167c768f24be3a024069904c0aa08c"
           test "$(git hash-object upstream-runtime/openclaw.wasm)" = "5222291f652b3f85e0c5d6b67f46263e2d004330"
           grep -q 'CLAW.REZ' upstream-runtime/asset-loader.js
           grep -q 'ASSETS.ZIP' upstream-runtime/config.xml
 
-      - name: Assemble production root and clean baseline
+      - name: Assemble root baseline and fresh Capitan Artiglio PWA
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf _site baseline-site
-          mkdir -p _site baseline-site
+          rm -rf _site baseline-site capitan-site
+          mkdir -p _site baseline-site capitan-site
 
-          # Preserve the root exactly as the known upstream published runtime.
+          # Preserve root exactly as upstream published runtime.
           git -C upstream-runtime archive HEAD | tar -x -C _site
           touch _site/.nojekyll
 
-          # Create an isolated preview from the same exact runtime.
+          # Golden working baseline: same exact runtime + diagnostics only.
           git -C upstream-runtime archive HEAD | tar -x -C baseline-site
           python3 scripts/inject_clean_diagnostics.py baseline-site
+          mkdir -p _site/baseline
+          rsync -a baseline-site/ _site/baseline/
 
-          # Give the WORKING baseline its own PWA identity so Android never
-          # confuses it with the old root/recovery "Claw Web" installation.
-          cat > baseline-site/site.webmanifest <<'EOF'
+          # Fresh PWA path: clone the known-working baseline, then change only
+          # PWA metadata/shell identity. Engine binaries remain byte-identical.
+          rsync -a baseline-site/ capitan-site/
+
+          cat > capitan-site/capitan-artiglio.webmanifest <<'EOF'
           {
-            "id": "/Captain-Claw-Web/baseline/",
+            "id": "/Captain-Claw-Web/capitan-artiglio/app-v1",
             "name": "Capitan Artiglio",
             "short_name": "Capitan Artiglio",
-            "description": "Captain Claw (1997) browser port - working baseline",
-            "start_url": "/Captain-Claw-Web/baseline/",
-            "scope": "/Captain-Claw-Web/baseline/",
+            "description": "Capitan Artiglio - Captain Claw (1997) sul browser",
+            "start_url": "/Captain-Claw-Web/capitan-artiglio/?source=pwa",
+            "scope": "/Captain-Claw-Web/capitan-artiglio/",
             "display": "fullscreen",
             "orientation": "landscape",
             "background_color": "#000000",
             "theme_color": "#000000",
-            "launch_handler": {
-              "client_mode": ["navigate-new", "auto"]
-            },
+            "launch_handler": {"client_mode": ["navigate-new", "auto"]},
             "icons": [
-              {"src": "favicon-16x16.png", "sizes": "16x16", "type": "image/png"},
-              {"src": "favicon-32x32.png", "sizes": "32x32", "type": "image/png"},
-              {"src": "android-chrome-192x192.png", "sizes": "192x192", "type": "image/png"},
+              {"src": "android-chrome-192x192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
               {"src": "android-chrome-512x512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
               {"src": "android-chrome-512x512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}
             ],
@@ -86,73 +85,61 @@ jobs:
           }
           EOF
 
-          # One-time baseline-only SW reset. The previous baseline cached the old
-          # "Claw Web" manifest, so force that scope to unregister and clear its
-          # own caches once. The runtime's sw-register.js fetches this file with
-          # cache:'no-store', so even the old service worker cannot hide it.
-          cat > baseline-site/sw-control.json <<'EOF'
-          {
-            "unregister": "baseline-pwa-identity-reset-20261024"
-          }
-          EOF
-
-          # Also give future baseline SW caches a distinct version. This changes
-          # only the PWA shell cache; the game binaries remain byte-identical.
           python3 - <<'PY'
           from pathlib import Path
           import re
 
-          sw = Path('baseline-site/sw.js')
-          text = sw.read_text(encoding='utf-8')
-          text, n = re.subn(
-              r'const CACHE_VERSION = "[^"]+";',
-              'const CACHE_VERSION = "baseline-pwa-v1";',
-              text,
-              count=1,
-          )
-          if n != 1:
-              raise SystemExit('Could not update baseline service-worker cache version')
-          sw.write_text(text, encoding='utf-8')
-
           for name in ('index.html', 'claw-web.html'):
-              p = Path('baseline-site') / name
+              p = Path('capitan-site') / name
               if not p.exists():
                   continue
               s = p.read_text(encoding='utf-8')
-              s = s.replace('<title>Claw Web</title>', '<title>Capitan Artiglio</title>')
+              s = re.sub(r'<link rel="manifest" href="[^"]+"\s*/?>',
+                         '<link rel="manifest" href="capitan-artiglio.webmanifest?v=1" />', s, count=1)
+              s = re.sub(r'<title>.*?</title>', '<title>Capitan Artiglio</title>', s, count=1)
               s = s.replace('content="Claw Web"', 'content="Capitan Artiglio"')
+              s = s.replace('Captain Claw (1997) reimplemented for the browser - unofficial fan project',
+                            'Capitan Artiglio - Captain Claw (1997) sul browser')
               p.write_text(s, encoding='utf-8')
+
+          sw = Path('capitan-site/sw.js')
+          text = sw.read_text(encoding='utf-8')
+          text, n = re.subn(r'const CACHE_VERSION = "[^"]+";',
+                            'const CACHE_VERSION = "capitan-artiglio-pwa-v1";',
+                            text, count=1)
+          if n != 1:
+              raise SystemExit('Could not set Capitan Artiglio SW cache version')
+          sw.write_text(text, encoding='utf-8')
+
+          # Fresh scope: no inherited kill switch required.
+          Path('capitan-site/sw-control.json').write_text('{"unregister":""}\n', encoding='utf-8')
           PY
 
-          mkdir -p _site/baseline
-          rsync -a baseline-site/ _site/baseline/
+          mkdir -p _site/capitan-artiglio
+          rsync -a capitan-site/ _site/capitan-artiglio/
 
-          # No copyrighted game archive is ever published.
-          rm -f _site/CLAW.REZ _site/baseline/CLAW.REZ
-
-          # Root remains byte-identical for the three engine binaries.
-          test "$(git hash-object _site/openclaw.js)" = "f76a4d004a69442d88c89a531155f15aa1dfd360"
-          test "$(git hash-object _site/openclaw.data)" = "45ebec8d48167c768f24be3a024069904c0aa08c"
-          test "$(git hash-object _site/openclaw.wasm)" = "5222291f652b3f85e0c5d6b67f46263e2d004330"
-
-          # Baseline engine binaries are also exactly upstream; only diagnostics/PWA metadata differ.
-          test "$(git hash-object _site/baseline/openclaw.js)" = "f76a4d004a69442d88c89a531155f15aa1dfd360"
-          test "$(git hash-object _site/baseline/openclaw.data)" = "45ebec8d48167c768f24be3a024069904c0aa08c"
-          test "$(git hash-object _site/baseline/openclaw.wasm)" = "5222291f652b3f85e0c5d6b67f46263e2d004330"
-          grep -q 'clean-diagnostics.js' _site/baseline/index.html
-          grep -q 'primary_archive=CLAW.REZ' _site/baseline/CLEAN_BASELINE.txt
-          grep -q '"id": "/Captain-Claw-Web/baseline/"' _site/baseline/site.webmanifest
-          grep -q '"start_url": "/Captain-Claw-Web/baseline/"' _site/baseline/site.webmanifest
-          grep -q '"name": "Capitan Artiglio"' _site/baseline/site.webmanifest
-          grep -q 'baseline-pwa-identity-reset-20261024' _site/baseline/sw-control.json
-          grep -q 'const CACHE_VERSION = "baseline-pwa-v1";' _site/baseline/sw.js
-          node --check _site/baseline/clean-diagnostics.js
-          node --check _site/baseline/sw.js
-
+          # Never publish the user's game archive.
+          rm -f _site/CLAW.REZ _site/baseline/CLAW.REZ _site/capitan-artiglio/CLAW.REZ
           if find _site -type f -iname 'CLAW.REZ' | grep -q .; then
             echo 'ERROR: CLAW.REZ must never be deployed' >&2
             exit 1
           fi
+
+          # Engine must remain identical in root, baseline and PWA.
+          for dir in _site _site/baseline _site/capitan-artiglio; do
+            test "$(git hash-object "$dir/openclaw.js")" = "f76a4d004a69442d88c89a531155f15aa1dfd360"
+            test "$(git hash-object "$dir/openclaw.data")" = "45ebec8d48167c768f24be3a024069904c0aa08c"
+            test "$(git hash-object "$dir/openclaw.wasm")" = "5222291f652b3f85e0c5d6b67f46263e2d004330"
+          done
+
+          grep -q 'clean-diagnostics.js' _site/baseline/index.html
+          grep -q 'clean-diagnostics.js' _site/capitan-artiglio/index.html
+          grep -q 'capitan-artiglio.webmanifest?v=1' _site/capitan-artiglio/index.html
+          grep -q '"name": "Capitan Artiglio"' _site/capitan-artiglio/capitan-artiglio.webmanifest
+          grep -q '"id": "/Captain-Claw-Web/capitan-artiglio/app-v1"' _site/capitan-artiglio/capitan-artiglio.webmanifest
+          grep -q 'const CACHE_VERSION = "capitan-artiglio-pwa-v1";' _site/capitan-artiglio/sw.js
+          node --check _site/capitan-artiglio/clean-diagnostics.js
+          node --check _site/capitan-artiglio/sw.js
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
@@ -169,6 +156,6 @@ jobs:
       pages: write
       id-token: write
     steps:
-      - name: Deploy root plus clean baseline preview
+      - name: Deploy root baseline and Capitan Artiglio PWA
         id: deployment
         uses: actions/deploy-pages@v4

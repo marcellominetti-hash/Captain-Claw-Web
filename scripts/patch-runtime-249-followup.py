@@ -8,7 +8,6 @@ ROOT=Path('upstream')
 p=ROOT/'OpenClaw/Engine/GameApp/BaseGameLogic.cpp'
 s=p.read_text(encoding='utf-8')
 if '#include <fstream>' not in s:
-    # Insert near the top using a stable standard include anchor when available.
     anchor='#include <cassert>'
     if anchor in s:
         s=s.replace(anchor, anchor+'\n#include <fstream>',1)
@@ -30,7 +29,7 @@ new='''    // Set Claw to spawn location. A selected custom WWD owns its own Sta
     if (useCustomWwdSpawn)
     {
         m_CurrentSpawnPosition = Point(pWwd->properties.startX, pWwd->properties.startY);
-        LOG("CUSTOM_LEVEL_SPAWN " + ToStr((int)pWwd->properties.startX) + "," + ToStr((int)pWwd->properties.startY));
+        LOG_WARNING("CUSTOM_LEVEL_SPAWN " + ToStr((int)pWwd->properties.startX) + "," + ToStr((int)pWwd->properties.startY));
     }
     else
     {
@@ -40,14 +39,14 @@ new='''    // Set Claw to spawn location. A selected custom WWD owns its own Sta
 '''
 if old not in s: raise SystemExit('spawn block not found')
 s=s.replace(old,new,1)
-# Deterministic signal for automated runtime tests.
+# Deterministic warning-level signal survives Release logging and is used by CI/runtime smoke tests.
 old2='''    LOG("Level loaded !");
     LOG("Level name: " + m_pCurrentLevel->m_LevelName);'''
 new2='''    LOG("Level loaded !");
 #ifdef __EMSCRIPTEN__
     {
         std::ifstream selectedCustomArchive("/CUSTOM_LEVEL.ZIP", std::ios::binary);
-        if (selectedCustomArchive.good()) LOG("CUSTOM_LEVEL_READY");
+        if (selectedCustomArchive.good()) LOG_WARNING("CUSTOM_LEVEL_READY");
     }
 #endif
     LOG("Level name: " + m_pCurrentLevel->m_LevelName);'''

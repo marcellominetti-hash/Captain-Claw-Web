@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+  <meta name="theme-color" content="#050a12">
+  <title>Capitan Artiglio · Livelli extra</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #050a12;
+      --panel: rgba(17, 29, 42, .94);
+      --panel2: rgba(25, 43, 59, .9);
+      --line: rgba(116, 168, 202, .28);
+      --text: #f5f7fa;
+      --muted: #a9b8c5;
+      --gold: #e5b14a;
+      --blue: #71aeda;
+      --danger: #ff786e;
+    }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    html, body { margin: 0; width: 100%; min-height: 100%; background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+    body {
+      background:
+        radial-gradient(circle at 15% 0%, rgba(42, 91, 124, .28), transparent 35%),
+        radial-gradient(circle at 90% 100%, rgba(131, 83, 24, .18), transparent 38%),
+        linear-gradient(135deg, #050911, #0b1621 55%, #050a12);
+      padding: max(14px, env(safe-area-inset-top)) max(18px, env(safe-area-inset-right)) max(14px, env(safe-area-inset-bottom)) max(18px, env(safe-area-inset-left));
+    }
+    .shell { width: min(1180px, 100%); margin: 0 auto; }
+    header { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }
+    .back, .icon-btn { border: 1px solid var(--line); background: rgba(18, 31, 44, .9); color: white; border-radius: 14px; min-width: 48px; height: 48px; font-size: 20px; }
+    .titles { flex: 1; min-width: 0; }
+    .kicker { color: var(--blue); font-size: 11px; font-weight: 800; letter-spacing: .15em; }
+    h1 { margin: 2px 0 0; font-size: clamp(22px, 4vw, 32px); line-height: 1.05; }
+    .count { color: var(--gold); font-size: 13px; font-weight: 700; margin-top: 3px; }
+    .toolbar { display: grid; grid-template-columns: minmax(200px, 1fr) auto; gap: 10px; margin-bottom: 10px; }
+    .search { width: 100%; height: 48px; border-radius: 14px; border: 1px solid var(--line); background: rgba(10, 18, 27, .92); color: white; padding: 0 16px; font-size: 16px; outline: none; }
+    .search:focus { border-color: rgba(113, 174, 218, .7); box-shadow: 0 0 0 3px rgba(113, 174, 218, .12); }
+    .filters { display: flex; gap: 8px; overflow-x: auto; padding: 3px 0 11px; scrollbar-width: none; }
+    .filters::-webkit-scrollbar { display: none; }
+    .chip { white-space: nowrap; height: 36px; border-radius: 18px; padding: 0 14px; border: 1px solid var(--line); background: rgba(15, 27, 39, .85); color: var(--muted); font-weight: 700; }
+    .chip.active { color: #111; background: var(--gold); border-color: #f2cc7a; }
+    .status { color: var(--muted); font-size: 13px; min-height: 22px; margin: 0 2px 8px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 10px; padding-bottom: 20px; }
+    .card { position: relative; border: 1px solid var(--line); border-radius: 16px; background: linear-gradient(150deg, var(--panel), rgba(11, 20, 30, .96)); overflow: hidden; min-height: 138px; display: flex; flex-direction: column; }
+    .card::before { content: ''; position: absolute; inset: 0 0 auto; height: 2px; background: linear-gradient(90deg, transparent, rgba(229,177,74,.8), transparent); opacity: .7; }
+    .card-body { padding: 14px 14px 10px; flex: 1; }
+    .title { font-size: 16px; font-weight: 800; line-height: 1.18; padding-right: 36px; overflow-wrap: anywhere; }
+    .meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; color: var(--muted); font-size: 12px; }
+    .pill { background: rgba(113, 174, 218, .11); border: 1px solid rgba(113, 174, 218, .18); border-radius: 10px; padding: 3px 7px; }
+    .special { color: #f3ce85; background: rgba(229,177,74,.10); border-color: rgba(229,177,74,.25); }
+    .fav { position: absolute; right: 9px; top: 9px; width: 34px; height: 34px; border: 0; border-radius: 12px; background: rgba(255,255,255,.05); color: #7f93a4; font-size: 20px; }
+    .fav.on { color: var(--gold); }
+    .play { margin: 0 10px 10px; height: 42px; border: 1px solid #f0c66b; border-radius: 12px; background: linear-gradient(#efc466, #d69b2f); color: #111820; font-size: 14px; font-weight: 900; letter-spacing: .03em; }
+    .empty { grid-column: 1/-1; border: 1px dashed var(--line); border-radius: 16px; color: var(--muted); text-align: center; padding: 35px 20px; background: rgba(8,15,23,.5); }
+    @media (max-width: 650px) { .toolbar { grid-template-columns: 1fr; } .grid { grid-template-columns: 1fr 1fr; } }
+    @media (max-width: 480px) { .grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <button class="back" id="backBtn" aria-label="Indietro">‹</button>
+      <div class="titles">
+        <div class="kicker">CAPITAN ARTIGLIO COLLECTION</div>
+        <h1>Livelli extra</h1>
+        <div class="count" id="countLabel">Caricamento libreria…</div>
+      </div>
+      <button class="icon-btn" id="randomBtn" title="Livello casuale">⚄</button>
+    </header>
+
+    <div class="toolbar">
+      <input class="search" id="search" type="search" autocomplete="off" placeholder="Cerca un livello…">
+      <button class="chip" id="clearBtn">Azzera filtri</button>
+    </div>
+
+    <div class="filters" id="filters">
+      <button class="chip active" data-filter="all">Tutti</button>
+      <button class="chip" data-filter="favorites">★ Preferiti</button>
+      <button class="chip" data-filter="recent">Recenti</button>
+      <button class="chip" data-filter="special">Asset speciali</button>
+      <button class="chip" data-filter="1">L1</button>
+      <button class="chip" data-filter="2">L2</button>
+      <button class="chip" data-filter="3">L3</button>
+      <button class="chip" data-filter="4">L4</button>
+      <button class="chip" data-filter="5">L5</button>
+      <button class="chip" data-filter="6">L6</button>
+      <button class="chip" data-filter="7">L7</button>
+      <button class="chip" data-filter="8">L8</button>
+      <button class="chip" data-filter="9">L9</button>
+      <button class="chip" data-filter="10">L10</button>
+      <button class="chip" data-filter="11">L11</button>
+      <button class="chip" data-filter="12">L12</button>
+      <button class="chip" data-filter="13">L13</button>
+      <button class="chip" data-filter="14">L14</button>
+    </div>
+
+    <div class="status" id="status"></div>
+    <div class="grid" id="grid"></div>
+  </div>
+
+<script>
+(() => {
+  const MANIFEST_URL = 'custom-levels/manifest.json';
+  const FAVORITES_KEY = 'capitan-artiglio:custom:favorites';
+  const RECENT_KEY = 'capitan-artiglio:custom:recent';
+  const MAX_RECENT = 24;
+  let levels = [];
+  let filter = new URLSearchParams(location.search).get('filter') || 'all';
+
+  const grid = document.getElementById('grid');
+  const search = document.getElementById('search');
+  const countLabel = document.getElementById('countLabel');
+  const status = document.getElementById('status');
+
+  const readList = (key) => {
+    try { const v = JSON.parse(localStorage.getItem(key) || '[]'); return Array.isArray(v) ? v : []; }
+    catch (_) { return []; }
+  };
+  const writeList = (key, value) => localStorage.setItem(key, JSON.stringify(value));
+  const favorites = () => new Set(readList(FAVORITES_KEY));
+  const recents = () => readList(RECENT_KEY);
+
+  function setFilter(next) {
+    filter = String(next || 'all');
+    document.querySelectorAll('[data-filter]').forEach(b => b.classList.toggle('active', b.dataset.filter === filter));
+    render();
+  }
+
+  function normalized(v) {
+    return String(v || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  }
+
+  function visibleLevels() {
+    const q = normalized(search.value.trim());
+    const fav = favorites();
+    const recent = recents();
+    let list = levels.filter(level => {
+      if (q && !normalized(level.title).includes(q)) return false;
+      if (filter === 'favorites') return fav.has(level.id);
+      if (filter === 'recent') return recent.includes(level.id);
+      if (filter === 'special') return !!level.hasAssets;
+      if (/^\d+$/.test(filter)) return Number(level.baseLevel) === Number(filter);
+      return true;
+    });
+    if (filter === 'recent') {
+      const order = new Map(recent.map((id, i) => [id, i]));
+      list.sort((a,b) => (order.get(a.id) ?? 9999) - (order.get(b.id) ?? 9999));
+    } else {
+      list.sort((a,b) => String(a.title).localeCompare(String(b.title), 'it', {numeric:true, sensitivity:'base'}));
+    }
+    return list;
+  }
+
+  function render() {
+    const list = visibleLevels();
+    const fav = favorites();
+    countLabel.textContent = `${levels.length} livelli disponibili`;
+    status.textContent = `${list.length} visualizzati${search.value.trim() ? ' · ricerca attiva' : ''}`;
+    grid.textContent = '';
+
+    if (!list.length) {
+      const empty = document.createElement('div');
+      empty.className = 'empty';
+      empty.textContent = levels.length ? 'Nessun livello corrisponde ai filtri.' : 'Il pacchetto livelli non è installato in questa build.';
+      grid.appendChild(empty);
+      return;
+    }
+
+    const frag = document.createDocumentFragment();
+    list.forEach(level => {
+      const card = document.createElement('article');
+      card.className = 'card';
+      card.innerHTML = `
+        <div class="card-body">
+          <div class="title"></div>
+          <div class="meta">
+            <span class="pill">Base L${Number(level.baseLevel) || '?'}</span>
+            ${level.hasAssets ? '<span class="pill special">Asset personalizzati</span>' : ''}
+          </div>
+        </div>
+        <button class="fav" aria-label="Preferito">★</button>
+        <button class="play">GIOCA</button>`;
+      card.querySelector('.title').textContent = level.title;
+      const favBtn = card.querySelector('.fav');
+      favBtn.classList.toggle('on', fav.has(level.id));
+      favBtn.addEventListener('click', () => toggleFavorite(level.id, favBtn));
+      card.querySelector('.play').addEventListener('click', () => play(level));
+      frag.appendChild(card);
+    });
+    grid.appendChild(frag);
+  }
+
+  function toggleFavorite(id, button) {
+    const fav = favorites();
+    if (fav.has(id)) fav.delete(id); else fav.add(id);
+    writeList(FAVORITES_KEY, [...fav]);
+    button.classList.toggle('on', fav.has(id));
+    if (filter === 'favorites') render();
+    vibrate(18);
+  }
+
+  function rememberRecent(id) {
+    const next = recents().filter(v => v !== id);
+    next.unshift(id);
+    writeList(RECENT_KEY, next.slice(0, MAX_RECENT));
+  }
+
+  function safeArchive(path) {
+    const value = String(path || '');
+    return /^custom-levels\/packs\/[A-Za-z0-9._-]+\.zip$/.test(value) ? value : '';
+  }
+
+  function play(level) {
+    const archive = safeArchive(level.archive);
+    const base = Number(level.baseLevel);
+    if (!archive || !(base >= 1 && base <= 14)) {
+      status.textContent = 'Pacchetto livello non valido.';
+      return;
+    }
+    rememberRecent(level.id);
+    try { if (window.CapitanAndroid) window.CapitanAndroid.saveMode('custom'); } catch (_) {}
+    vibrate(28);
+    const qs = new URLSearchParams({
+      android: '1', mode: 'custom', level: level.id,
+      base: String(base), archive, shell: 'v2'
+    });
+    location.href = 'index.html?' + qs.toString();
+  }
+
+  function vibrate(ms) {
+    try {
+      if (window.CapitanAndroid && typeof window.CapitanAndroid.vibrate === 'function') {
+        window.CapitanAndroid.vibrate(ms); return;
+      }
+    } catch (_) {}
+    if (navigator.vibrate) navigator.vibrate(ms);
+  }
+
+  async function load() {
+    try {
+      const res = await fetch(MANIFEST_URL, {cache:'no-store'});
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      levels = Array.isArray(data.levels) ? data.levels.filter(l => l && l.id && l.title) : [];
+      setFilter(filter);
+    } catch (err) {
+      console.error(err);
+      levels = [];
+      countLabel.textContent = 'Libreria non disponibile';
+      status.textContent = 'Questa build non contiene ancora il pacchetto dei livelli extra.';
+      render();
+    }
+  }
+
+  document.querySelectorAll('[data-filter]').forEach(b => b.addEventListener('click', () => { vibrate(14); setFilter(b.dataset.filter); }));
+  search.addEventListener('input', render);
+  document.getElementById('clearBtn').addEventListener('click', () => { search.value=''; setFilter('all'); });
+  document.getElementById('randomBtn').addEventListener('click', () => {
+    const list = visibleLevels(); if (list.length) play(list[Math.floor(Math.random()*list.length)]);
+  });
+  document.getElementById('backBtn').addEventListener('click', () => {
+    vibrate(14);
+    try { if (window.CapitanAndroid) { window.CapitanAndroid.goHome(); return; } } catch (_) {}
+    history.back();
+  });
+
+  if (filter === 'favorites' || filter === 'recent' || filter === 'special' || /^\d+$/.test(filter)) setFilter(filter);
+  load();
+})();
+</script>
+</body>
+</html>

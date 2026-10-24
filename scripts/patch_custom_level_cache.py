@@ -4,7 +4,9 @@ from pathlib import Path
 root = Path('.')
 shared = root / 'OpenClaw/Engine/SharedDefines.h'
 app = root / 'OpenClaw/Engine/GameApp/BaseGameApp.cpp'
+wwd_loader = root / 'OpenClaw/Engine/Resource/Loaders/WwdLoader.cpp'
 
+# 1) Give the selected custom level its own resource-cache identity.
 s = shared.read_text(encoding='utf-8', errors='ignore')
 needle = '#define CUSTOM_RESOURCE   "ASSETS_ZIP"'
 if needle not in s:
@@ -12,6 +14,7 @@ if needle not in s:
 s = s.replace(needle, needle + '\n#define CUSTOM_LEVEL_RESOURCE "CUSTOM_LEVEL_ZIP"', 1)
 shared.write_text(s, encoding='utf-8')
 
+# 2) Mount /CUSTOM_LEVEL.ZIP before ASSETS.ZIP and CLAW.REZ when present.
 a = app.read_text(encoding='utf-8', errors='ignore')
 needle = '''  m_pResourceMgr = new ResourceMgrImpl();
   // Custom cache first so ASSETS.ZIP can override CLAW.REZ assets
@@ -52,4 +55,15 @@ if needle not in a:
     raise SystemExit('Resource manager insertion marker not found')
 a = a.replace(needle, replacement, 1)
 app.write_text(a, encoding='utf-8')
-print('Custom-level cache patch applied.')
+
+# 3) The web fork still loads WWDs directly from CLAW.REZ. Route WWD reads
+# through ResourceMgr so CUSTOM_LEVEL.ZIP can override LEVEL1/WORLDS/WORLD.WWD.
+w = wwd_loader.read_text(encoding='utf-8', errors='ignore')
+needle = 'shared_ptr<ResourceHandle> wwdHandle = g_pApp->GetResourceCache()->GetHandle(&resource);'
+replacement = 'shared_ptr<ResourceHandle> wwdHandle = g_pApp->GetResourceMgr()->VGetHandle(&resource);'
+if needle not in w:
+    raise SystemExit('WWD direct-cache marker not found')
+w = w.replace(needle, replacement, 1)
+wwd_loader.write_text(w, encoding='utf-8')
+
+print('Custom-level cache + WWD precedence patch applied.')

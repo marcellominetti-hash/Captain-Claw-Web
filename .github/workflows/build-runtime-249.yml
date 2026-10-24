@@ -1,0 +1,91 @@
+name: Build robust Capitan Artiglio runtime 2.4.9
+
+on:
+  push:
+    branches: [runtime-robust-249]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  UPSTREAM_REPO: https://github.com/arthurboss/claw-web.git
+  UPSTREAM_COMMIT: e723d3d48b5ba2cc723751209954cfc46c82d202
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout patch repository
+        uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          python -m pip install --upgrade pip cmake
+          sudo apt-get update
+          sudo apt-get install -y ninja-build zip
+
+      - name: Install Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: latest
+          actions-cache-folder: emsdk-cache
+
+      - name: Fetch pinned Claw Web source
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git clone "$UPSTREAM_REPO" upstream
+          git -C upstream checkout --detach "$UPSTREAM_COMMIT"
+
+      - name: Apply robust custom-level patches
+        run: python scripts/patch-runtime-249.py
+
+      - name: Rebuild asset archive
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd upstream/Build_Release
+          rm -f ASSETS.ZIP
+          (cd ASSETS && zip -q -r ../ASSETS.ZIP .)
+          test -s ASSETS.ZIP
+          unzip -t ASSETS.ZIP >/dev/null
+          unzip -l ASSETS.ZIP | grep -i 'LEVEL_METADATA/LEVEL14.XML'
+          unzip -p ASSETS.ZIP MENU.xml | grep -A10 -B8 'LOAD_CUSTOM_LEVEL_BUTTON'
+
+      - name: Configure and build WebAssembly runtime
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd upstream
+          rm -rf build
+          rm -f Build_Release/openclaw.js Build_Release/openclaw.wasm Build_Release/openclaw.data
+          emcmake cmake -S . -B build -DEmscripten=1 -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel 2
+          test -s Build_Release/openclaw.js
+          test -s Build_Release/openclaw.wasm
+          test -s Build_Release/openclaw.data
+          grep -q 'CUSTOM_LEVEL.ZIP' Build_Release/openclaw.js || true
+          ls -lh Build_Release/openclaw.js Build_Release/openclaw.wasm Build_Release/openclaw.data Build_Release/ASSETS.ZIP
+
+      - name: Package verified runtime inputs
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p runtime-249
+          cp upstream/Build_Release/openclaw.js runtime-249/
+          cp upstream/Build_Release/openclaw.wasm runtime-249/
+          cp upstream/Build_Release/openclaw.data runtime-249/
+          cp upstream/Build_Release/ASSETS.ZIP runtime-249/
+          cp upstream/Build_Release/ASSETS/MENU.xml runtime-249/MENU.xml
+          cp upstream/Build_Release/ASSETS/LEVEL_METADATA/LEVEL14.XML runtime-249/LEVEL14.XML
+          sha256sum runtime-249/* > runtime-249/SHA256SUMS.txt
+
+      - name: Upload runtime artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: capitan-artiglio-runtime-249
+          path: runtime-249/
+          if-no-files-found: error
+          retention-days: 7

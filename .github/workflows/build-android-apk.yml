@@ -58,17 +58,14 @@ jobs:
           mkdir -p android/app/src/main/assets/www
           git -C upstream-runtime archive HEAD | tar -x -C android/app/src/main/assets/www
 
-          # An APK does not need PWA/service-worker lifecycle management.
           printf '%s\n' '// Service worker disabled inside Android APK.' > android/app/src/main/assets/www/sw-register.js
 
-          # Never package the user's proprietary game archive.
           rm -f android/app/src/main/assets/www/CLAW.REZ
           if find android/app/src/main/assets/www -type f -iname 'CLAW.REZ' | grep -q .; then
             echo 'ERROR: CLAW.REZ must not be inside APK' >&2
             exit 1
           fi
 
-          # Use the existing Captain Claw artwork as launcher icon source.
           mkdir -p android/app/src/main/res/drawable
           cp upstream-runtime/android-chrome-192x192.png android/app/src/main/res/drawable/icon.png
 
@@ -91,3 +88,20 @@ jobs:
           path: dist/Capitan-Artiglio-v1.apk
           if-no-files-found: error
           retention-days: 7
+
+      - name: Download APK signer tool
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -L --fail --retry 3 \
+            https://github.com/patrickfav/uber-apk-signer/releases/download/v1.3.0/uber-apk-signer-1.3.0.jar \
+            -o dist/uber-apk-signer-1.3.0.jar
+          echo 'e1299fd6fcf4da527dd53735b56127e8ea922a321128123b9c32d619bba1d835  dist/uber-apk-signer-1.3.0.jar' | sha256sum -c -
+
+      - name: Upload signer tool
+        uses: actions/upload-artifact@v4
+        with:
+          name: uber-apk-signer-1.3.0
+          path: dist/uber-apk-signer-1.3.0.jar
+          if-no-files-found: error
+          retention-days: 1

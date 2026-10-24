@@ -88,6 +88,7 @@ replace_once(app, old_cache_block, new_cache_block)
 #    the matching original level slot. The selected WWD in CUSTOM_LEVEL.ZIP
 #    overrides /LEVELN/WORLDS/WORLD.WWD.
 logic = root / "OpenClaw/Engine/GameApp/BaseGameLogic.cpp"
+replace_once(logic, '#include <algorithm>\n', '#include <algorithm>\n#include <fstream>\n')
 old_init = '''        case GameState_Initializing:
         {
 #ifdef ANDROID
@@ -182,7 +183,7 @@ new_checkpoint = '''    const CheckpointSave* pCheckpointSave = m_pGameSaveMgr->
 replace_once(logic, old_checkpoint, new_checkpoint)
 
 # 5) For a custom WWD, checkpoint zero must be the WWD's own startX/startY,
-#    not the hard-coded campaign spawn.  Later checkpoint flags already update
+#    not the hard-coded campaign spawn. Later checkpoint flags already update
 #    m_CurrentSpawnPosition through the existing checkpoint event path.
 old_spawn = '''    // Set claw to spawn location
     m_CurrentSpawnPosition = GetSpawnPosition(m_pCurrentLevel->m_LeveNumber, m_pCurrentLevel->m_LoadedCheckpoint);

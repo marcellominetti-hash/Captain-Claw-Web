@@ -57,6 +57,49 @@ jobs:
           git -C upstream-runtime archive HEAD | tar -x -C baseline-site
           python3 scripts/inject_clean_diagnostics.py baseline-site
 
+          # Give the WORKING baseline its own PWA identity so Android never
+          # confuses it with the old root/recovery "Claw Web" installation.
+          cat > baseline-site/site.webmanifest <<'EOF'
+          {
+            "id": "/Captain-Claw-Web/baseline/",
+            "name": "Capitan Artiglio",
+            "short_name": "Capitan Artiglio",
+            "description": "Captain Claw (1997) browser port - working baseline",
+            "start_url": "/Captain-Claw-Web/baseline/",
+            "scope": "/Captain-Claw-Web/baseline/",
+            "display": "fullscreen",
+            "orientation": "landscape",
+            "background_color": "#000000",
+            "theme_color": "#000000",
+            "launch_handler": {
+              "client_mode": ["navigate-new", "auto"]
+            },
+            "icons": [
+              {"src": "favicon-16x16.png", "sizes": "16x16", "type": "image/png"},
+              {"src": "favicon-32x32.png", "sizes": "32x32", "type": "image/png"},
+              {"src": "android-chrome-192x192.png", "sizes": "192x192", "type": "image/png"},
+              {"src": "android-chrome-512x512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+              {"src": "android-chrome-512x512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}
+            ],
+            "categories": ["games"],
+            "lang": "it"
+          }
+          EOF
+
+          # Cosmetic PWA metadata only; engine/runtime files remain untouched.
+          python3 - <<'PY'
+          from pathlib import Path
+          for name in ('index.html', 'claw-web.html'):
+              p = Path('baseline-site') / name
+              if not p.exists():
+                  continue
+              s = p.read_text(encoding='utf-8')
+              s = s.replace('<title>Claw Web</title>', '<title>Capitan Artiglio</title>')
+              s = s.replace('content="Claw Web"', 'content="Capitan Artiglio"')
+              s = s.replace('content="Claw Web"', 'content="Capitan Artiglio"')
+              p.write_text(s, encoding='utf-8')
+          PY
+
           mkdir -p _site/baseline
           rsync -a baseline-site/ _site/baseline/
 
@@ -68,12 +111,15 @@ jobs:
           test "$(git hash-object _site/openclaw.data)" = "45ebec8d48167c768f24be3a024069904c0aa08c"
           test "$(git hash-object _site/openclaw.wasm)" = "5222291f652b3f85e0c5d6b67f46263e2d004330"
 
-          # Baseline engine binaries are also exactly upstream; only diagnostics differ.
+          # Baseline engine binaries are also exactly upstream; only diagnostics/PWA metadata differ.
           test "$(git hash-object _site/baseline/openclaw.js)" = "f76a4d004a69442d88c89a531155f15aa1dfd360"
           test "$(git hash-object _site/baseline/openclaw.data)" = "45ebec8d48167c768f24be3a024069904c0aa08c"
           test "$(git hash-object _site/baseline/openclaw.wasm)" = "5222291f652b3f85e0c5d6b67f46263e2d004330"
           grep -q 'clean-diagnostics.js' _site/baseline/index.html
           grep -q 'primary_archive=CLAW.REZ' _site/baseline/CLEAN_BASELINE.txt
+          grep -q '"id": "/Captain-Claw-Web/baseline/"' _site/baseline/site.webmanifest
+          grep -q '"start_url": "/Captain-Claw-Web/baseline/"' _site/baseline/site.webmanifest
+          grep -q '"name": "Capitan Artiglio"' _site/baseline/site.webmanifest
           node --check _site/baseline/clean-diagnostics.js
 
           if find _site -type f -iname 'CLAW.REZ' | grep -q .; then

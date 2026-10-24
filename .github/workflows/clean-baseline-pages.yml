@@ -86,16 +86,40 @@ jobs:
           }
           EOF
 
-          # Cosmetic PWA metadata only; engine/runtime files remain untouched.
+          # One-time baseline-only SW reset. The previous baseline cached the old
+          # "Claw Web" manifest, so force that scope to unregister and clear its
+          # own caches once. The runtime's sw-register.js fetches this file with
+          # cache:'no-store', so even the old service worker cannot hide it.
+          cat > baseline-site/sw-control.json <<'EOF'
+          {
+            "unregister": "baseline-pwa-identity-reset-20261024"
+          }
+          EOF
+
+          # Also give future baseline SW caches a distinct version. This changes
+          # only the PWA shell cache; the game binaries remain byte-identical.
           python3 - <<'PY'
           from pathlib import Path
+          import re
+
+          sw = Path('baseline-site/sw.js')
+          text = sw.read_text(encoding='utf-8')
+          text, n = re.subn(
+              r'const CACHE_VERSION = "[^"]+";',
+              'const CACHE_VERSION = "baseline-pwa-v1";',
+              text,
+              count=1,
+          )
+          if n != 1:
+              raise SystemExit('Could not update baseline service-worker cache version')
+          sw.write_text(text, encoding='utf-8')
+
           for name in ('index.html', 'claw-web.html'):
               p = Path('baseline-site') / name
               if not p.exists():
                   continue
               s = p.read_text(encoding='utf-8')
               s = s.replace('<title>Claw Web</title>', '<title>Capitan Artiglio</title>')
-              s = s.replace('content="Claw Web"', 'content="Capitan Artiglio"')
               s = s.replace('content="Claw Web"', 'content="Capitan Artiglio"')
               p.write_text(s, encoding='utf-8')
           PY
@@ -120,7 +144,10 @@ jobs:
           grep -q '"id": "/Captain-Claw-Web/baseline/"' _site/baseline/site.webmanifest
           grep -q '"start_url": "/Captain-Claw-Web/baseline/"' _site/baseline/site.webmanifest
           grep -q '"name": "Capitan Artiglio"' _site/baseline/site.webmanifest
+          grep -q 'baseline-pwa-identity-reset-20261024' _site/baseline/sw-control.json
+          grep -q 'const CACHE_VERSION = "baseline-pwa-v1";' _site/baseline/sw.js
           node --check _site/baseline/clean-diagnostics.js
+          node --check _site/baseline/sw.js
 
           if find _site -type f -iname 'CLAW.REZ' | grep -q .; then
             echo 'ERROR: CLAW.REZ must never be deployed' >&2

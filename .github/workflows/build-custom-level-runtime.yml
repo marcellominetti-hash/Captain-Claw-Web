@@ -40,12 +40,19 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/patch_custom_levels.py upstream
+          python3 scripts/patch_custom_level_resource_routing.py upstream
           grep -q 'CUSTOM_LEVEL_RESOURCE' upstream/OpenClaw/Engine/SharedDefines.h
           grep -q 'CUSTOM_LEVEL.ZIP detected' upstream/OpenClaw/Engine/GameApp/BaseGameApp.cpp
           grep -q 'CUSTOM_LEVEL.NUM' upstream/OpenClaw/Engine/GameApp/BaseGameLogic.cpp
           grep -q 'Spawn coordinates embedded' upstream/OpenClaw/Engine/GameApp/BaseGameLogic.cpp
 
-          # Guardrail: the primary archive must remain the native REZ reader.
+          # WWD and legacy asset loaders must now honor cache priority.
+          grep -q 'GetResourceMgr()->VGetHandle' upstream/OpenClaw/Engine/Resource/Loaders/WwdLoader.cpp
+          grep -q 'GetResourceMgr()->VGetHandle' upstream/OpenClaw/Engine/Resource/Loaders/PalLoader.cpp
+          grep -q 'GetResourceMgr()->VGetHandle' upstream/OpenClaw/Engine/Resource/Loaders/PidLoader.cpp
+          grep -q 'GetResourceMgr()->VGetHandle' upstream/OpenClaw/Engine/Resource/Loaders/AniLoader.cpp
+
+          # Guardrail: primary and normal custom archives keep their intended readers.
           grep -q 'new ResourceRezArchive(rezArchivePath)' upstream/OpenClaw/Engine/GameApp/BaseGameApp.cpp
           grep -q 'new ResourceZipArchive(customArchivePath)' upstream/OpenClaw/Engine/GameApp/BaseGameApp.cpp
 

@@ -15,8 +15,8 @@ mount_block = '''            if (window.ClawCustomLevels && typeof window.ClawCu
 '''
 
 # The native Collection v2 home launches index.html with mode=custom/favorites.
-# Route those *library* requests to levels.html before the game runtime starts.
-# A selected level also uses mode=custom, but carries level/archive; never redirect it.
+# Route library requests to levels.html before the game runtime starts. Continue
+# may also carry a compact custom-level token persisted by the Android bridge.
 router_marker = 'Collection v2 mode router'
 router_anchor = '</head>'
 router_block = '''    <script>
@@ -24,8 +24,35 @@ router_block = '''    <script>
       (() => {
         const params = new URLSearchParams(window.location.search);
         if (params.get('android') !== '1' || params.get('shell') !== 'v2') return;
-        const mode = params.get('mode');
+        const mode = params.get('mode') || '';
         const selectedLevel = params.get('level') || params.get('archive');
+
+        // CONTINUA for custom levels stores:
+        // custom|<id>|<base>|custom-levels/packs/<file>.zip
+        if (!selectedLevel && mode.startsWith('custom|')) {
+          const parts = mode.split('|');
+          const levelId = parts.length === 4 ? parts[1] : '';
+          const base = parts.length === 4 ? Number(parts[2]) : NaN;
+          const archive = parts.length === 4 ? parts[3] : '';
+          const validId = /^[A-Za-z0-9._-]+$/.test(levelId);
+          const validBase = Number.isInteger(base) && base >= 1 && base <= 14;
+          const validArchive = /^custom-levels\\/packs\\/[A-Za-z0-9._-]+\\.zip$/.test(archive);
+
+          if (validId && validBase && validArchive) {
+            const next = new URLSearchParams({
+              android: '1', mode: 'custom', level: levelId,
+              base: String(base), archive, shell: 'v2'
+            });
+            window.location.replace(`index.html?${next.toString()}`);
+            return;
+          }
+
+          // A stale/corrupted token should never block the user from playing.
+          window.location.replace('levels.html?android=1&shell=v2&filter=recent');
+          return;
+        }
+
+        // A selected level already carries level/archive and must reach OpenClaw.
         if (!selectedLevel && (mode === 'custom' || mode === 'favorites')) {
           const filter = mode === 'favorites' ? 'favorites' : 'all';
           window.location.replace(`levels.html?android=1&shell=v2&filter=${filter}`);

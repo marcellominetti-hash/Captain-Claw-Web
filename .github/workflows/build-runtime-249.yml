@@ -40,7 +40,9 @@ jobs:
           git -C upstream checkout --detach "$UPSTREAM_COMMIT"
 
       - name: Apply robust custom-level patches
-        run: python scripts/patch-runtime-249.py
+        run: |
+          python scripts/patch-runtime-249.py
+          python scripts/patch-runtime-249-followup.py
 
       - name: Rebuild asset archive
         shell: bash
@@ -66,7 +68,6 @@ jobs:
           test -s Build_Release/openclaw.js
           test -s Build_Release/openclaw.wasm
           test -s Build_Release/openclaw.data
-          grep -q 'CUSTOM_LEVEL.ZIP' Build_Release/openclaw.js || true
           ls -lh Build_Release/openclaw.js Build_Release/openclaw.wasm Build_Release/openclaw.data Build_Release/ASSETS.ZIP
 
       - name: Package verified runtime inputs

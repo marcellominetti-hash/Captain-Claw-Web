@@ -120,6 +120,7 @@ jobs:
           test -s "$WEBROOT/levels.html"
           grep -q 'custom-levels.js' "$WEBROOT/index.html"
           grep -q 'ClawCustomLevels.mountSelected' "$WEBROOT/index.html"
+          grep -q 'Collection v2 Android embedded CLAW.REZ bridge' "$WEBROOT/asset-loader.js"
 
       - name: Build Collection v2 base APK
         shell: bash

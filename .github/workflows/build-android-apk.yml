@@ -1,0 +1,92 @@
+name: Build Capitan Artiglio APK
+
+on:
+  push:
+    branches:
+      - android-apk-v1
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  UPSTREAM_REPO: https://github.com/arthurboss/claw-web.git
+  UPSTREAM_PUBLISHED_COMMIT: ee5041244d7a6903f95523ddfc35eebeb0754f4f
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android 35 SDK
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Fetch exact known-working web runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init upstream-runtime
+          git -C upstream-runtime remote add origin "$UPSTREAM_REPO"
+          git -C upstream-runtime fetch --depth=1 origin "$UPSTREAM_PUBLISHED_COMMIT"
+          git -C upstream-runtime checkout --detach FETCH_HEAD
+
+          test "$(git hash-object upstream-runtime/openclaw.js)" = "f76a4d004a69442d88c89a531155f15aa1dfd360"
+          test "$(git hash-object upstream-runtime/openclaw.data)" = "45ebec8d48167c768f24be3a024069904c0aa08c"
+          test "$(git hash-object upstream-runtime/openclaw.wasm)" = "5222291f652b3f85e0c5d6b67f46263e2d004330"
+
+          rm -rf android/app/src/main/assets/www
+          mkdir -p android/app/src/main/assets/www
+          git -C upstream-runtime archive HEAD | tar -x -C android/app/src/main/assets/www
+
+          # An APK does not need PWA/service-worker lifecycle management.
+          printf '%s\n' '// Service worker disabled inside Android APK.' > android/app/src/main/assets/www/sw-register.js
+
+          # Never package the user's proprietary game archive.
+          rm -f android/app/src/main/assets/www/CLAW.REZ
+          if find android/app/src/main/assets/www -type f -iname 'CLAW.REZ' | grep -q .; then
+            echo 'ERROR: CLAW.REZ must not be inside APK' >&2
+            exit 1
+          fi
+
+          # Use the existing Captain Claw artwork as launcher icon source.
+          mkdir -p android/app/src/main/res/drawable
+          cp upstream-runtime/android-chrome-192x192.png android/app/src/main/res/drawable/icon.png
+
+      - name: Build debug APK
+        shell: bash
+        run: gradle -p android :app:assembleDebug --stacktrace
+
+      - name: Prepare artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp android/app/build/outputs/apk/debug/app-debug.apk dist/Capitan-Artiglio-v1.apk
+          ls -lh dist/Capitan-Artiglio-v1.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Capitan-Artiglio-v1-apk
+          path: dist/Capitan-Artiglio-v1.apk
+          if-no-files-found: error
+          retention-days: 7

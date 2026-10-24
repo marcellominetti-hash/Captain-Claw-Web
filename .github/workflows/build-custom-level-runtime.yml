@@ -1,0 +1,101 @@
+name: Build Custom Levels WASM Runtime
+
+on:
+  push:
+    branches:
+      - custom-levels-v1
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout patch branch
+        uses: actions/checkout@v4
+
+      - name: Install build prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y zip unzip make python3-pip rsync
+          python3 -m pip install --user 'cmake==4.3.2'
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Fetch pinned known source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init upstream
+          git -C upstream remote add origin https://github.com/arthurboss/claw-web.git
+          git -C upstream fetch --depth=1 origin e723d3d48b5ba2cc723751209954cfc46c82d202
+          git -C upstream checkout --detach FETCH_HEAD
+
+      - name: Apply custom-level-only engine patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/patch_custom_levels.py upstream
+          grep -q 'CUSTOM_LEVEL_RESOURCE' upstream/OpenClaw/Engine/SharedDefines.h
+          grep -q 'CUSTOM_LEVEL.ZIP detected' upstream/OpenClaw/Engine/GameApp/BaseGameApp.cpp
+          grep -q 'CUSTOM_LEVEL.NUM' upstream/OpenClaw/Engine/GameApp/BaseGameLogic.cpp
+          grep -q 'Spawn coordinates embedded' upstream/OpenClaw/Engine/GameApp/BaseGameLogic.cpp
+
+          # Guardrail: the primary archive must remain the native REZ reader.
+          grep -q 'new ResourceRezArchive(rezArchivePath)' upstream/OpenClaw/Engine/GameApp/BaseGameApp.cpp
+          grep -q 'new ResourceZipArchive(customArchivePath)' upstream/OpenClaw/Engine/GameApp/BaseGameApp.cpp
+
+      - name: Install Emscripten SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth=1 https://github.com/emscripten-core/emsdk.git upstream/emsdk
+          cd upstream/emsdk
+          ./emsdk install latest
+          ./emsdk activate latest
+
+      - name: Build patched WebAssembly engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd upstream
+          source ./emsdk/emsdk_env.sh
+          ./build_wasm.sh
+
+      - name: Assemble runtime artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf custom-runtime
+          mkdir -p custom-runtime
+          rsync -a upstream/Build_Release/ custom-runtime/
+          cp custom-runtime/claw-web.html custom-runtime/index.html
+          touch custom-runtime/.nojekyll
+
+          # User game content is never part of CI artifacts.
+          rm -f custom-runtime/CLAW.REZ custom-runtime/CUSTOM_LEVEL.ZIP custom-runtime/CUSTOM_LEVEL.NUM
+
+          test -s custom-runtime/openclaw.js
+          test -s custom-runtime/openclaw.wasm
+          test -s custom-runtime/openclaw.data
+          grep -q 'CLAW.REZ' custom-runtime/config.xml
+          grep -q 'ASSETS.ZIP' custom-runtime/config.xml
+
+          cat > custom-runtime/CUSTOM_LEVEL_RUNTIME.txt <<EOF
+          branch=custom-levels-v1
+          repository_commit=${GITHUB_SHA}
+          upstream_source=e723d3d48b5ba2cc723751209954cfc46c82d202
+          cache_priority=CUSTOM_LEVEL.ZIP,ASSETS.ZIP,CLAW.REZ
+          EOF
+
+      - name: Upload patched runtime
+        uses: actions/upload-artifact@v4
+        with:
+          name: capitan-artiglio-custom-level-runtime
+          path: custom-runtime/
+          if-no-files-found: error
+          retention-days: 7

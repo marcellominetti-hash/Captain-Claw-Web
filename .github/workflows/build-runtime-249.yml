@@ -1,4 +1,5 @@
 name: Build robust Capitan Artiglio runtime 2.4.9
+# v5: Release-visible CUSTOM_LEVEL_READY diagnostics
 
 on:
   push:

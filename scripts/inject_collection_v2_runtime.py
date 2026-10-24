@@ -14,6 +14,48 @@ mount_block = '''            if (window.ClawCustomLevels && typeof window.ClawCu
             }
 '''
 
+asset_marker = 'Collection v2 Android embedded CLAW.REZ bridge'
+asset_anchor = '''async function prepareAssetStorage() {
+  try {
+'''
+asset_replacement = '''async function prepareAssetStorage() {
+  try {
+    // Collection v2 Android embedded CLAW.REZ bridge.
+    // The private APK contains the original archive under assets/www, served
+    // through WebViewAssetLoader on the same appassets origin. Prefer it over
+    // IndexedDB so campaign and custom levels always share one authoritative
+    // CLAW.REZ and the Android build never asks the user to upload it again.
+    const androidEmbedded = new URLSearchParams(window.location.search).get('android') === '1';
+    if (androidEmbedded) {
+      try {
+        const response = await fetch('CLAW.REZ', {
+          cache: 'no-store',
+          credentials: 'same-origin'
+        });
+        if (response.ok) {
+          const bundledRez = await response.blob();
+          const sizeOk = bundledRez.size >= REZ_MIN_SIZE && bundledRez.size <= REZ_MAX_SIZE;
+          const signatureOk = sizeOk && await hasRezSignature(bundledRez);
+          if (sizeOk && signatureOk) {
+            clawRezData = new Uint8Array(await bundledRez.arrayBuffer());
+            hideAssetUpload();
+            console.log(`[android-apk] Bundled CLAW.REZ ready (${(clawRezData.length / 1024 / 1024).toFixed(2)}MB)`);
+            // openclaw.wasm/.data are APK assets too. Do not consult
+            // navigator.onLine here: appassets remains readable while offline.
+            return true;
+          }
+          console.warn('[android-apk] Bundled CLAW.REZ failed size/signature validation; falling back to normal storage flow.');
+        } else {
+          console.warn(`[android-apk] Bundled CLAW.REZ unavailable (HTTP ${response.status}); falling back to normal storage flow.`);
+        }
+      } catch (embeddedError) {
+        console.warn('[android-apk] Could not read bundled CLAW.REZ; falling back to normal storage flow.', embeddedError);
+      }
+    }
+'''
+
+patched_asset_dirs = set()
+
 for arg in sys.argv[1:]:
     path = Path(arg)
     text = path.read_text(encoding='utf-8')
@@ -35,3 +77,22 @@ for arg in sys.argv[1:]:
 
     path.write_text(text, encoding='utf-8')
     print(f"Collection v2 runtime injected: {path}")
+
+    asset_dir = path.parent.resolve()
+    if asset_dir in patched_asset_dirs:
+        continue
+    patched_asset_dirs.add(asset_dir)
+
+    asset_loader = asset_dir / 'asset-loader.js'
+    if not asset_loader.is_file():
+        raise RuntimeError(f"asset-loader.js missing next to {path}")
+    asset_text = asset_loader.read_text(encoding='utf-8')
+    if asset_marker not in asset_text:
+        if asset_text.count(asset_anchor) != 1:
+            raise RuntimeError(
+                f"expected exactly one prepareAssetStorage anchor in {asset_loader}, "
+                f"got {asset_text.count(asset_anchor)}"
+            )
+        asset_text = asset_text.replace(asset_anchor, asset_replacement, 1)
+        asset_loader.write_text(asset_text, encoding='utf-8')
+        print(f"Android embedded CLAW.REZ bridge injected: {asset_loader}")

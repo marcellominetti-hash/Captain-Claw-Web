@@ -14,6 +14,25 @@ env:
   UPSTREAM_PUBLISHED_COMMIT: ee5041244d7a6903f95523ddfc35eebeb0754f4f
 
 jobs:
+  signer:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download APK signer tool
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -L --fail --retry 3 \
+            https://github.com/patrickfav/uber-apk-signer/releases/download/v1.3.0/uber-apk-signer-1.3.0.jar \
+            -o uber-apk-signer-1.3.0.jar
+          echo 'e1299fd6fcf4da527dd53735b56127e8ea922a321128123b9c32d619bba1d835  uber-apk-signer-1.3.0.jar' | sha256sum -c -
+      - name: Upload signer tool
+        uses: actions/upload-artifact@v4
+        with:
+          name: uber-apk-signer-1.3.0
+          path: uber-apk-signer-1.3.0.jar
+          if-no-files-found: error
+          retention-days: 1
+
   build:
     runs-on: ubuntu-latest
     steps:
@@ -88,20 +107,3 @@ jobs:
           path: dist/Capitan-Artiglio-v1.apk
           if-no-files-found: error
           retention-days: 7
-
-      - name: Download APK signer tool
-        shell: bash
-        run: |
-          set -euo pipefail
-          curl -L --fail --retry 3 \
-            https://github.com/patrickfav/uber-apk-signer/releases/download/v1.3.0/uber-apk-signer-1.3.0.jar \
-            -o dist/uber-apk-signer-1.3.0.jar
-          echo 'e1299fd6fcf4da527dd53735b56127e8ea922a321128123b9c32d619bba1d835  dist/uber-apk-signer-1.3.0.jar' | sha256sum -c -
-
-      - name: Upload signer tool
-        uses: actions/upload-artifact@v4
-        with:
-          name: uber-apk-signer-1.3.0
-          path: dist/uber-apk-signer-1.3.0.jar
-          if-no-files-found: error
-          retention-days: 1

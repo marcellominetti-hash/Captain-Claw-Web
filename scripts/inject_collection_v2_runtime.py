@@ -14,6 +14,26 @@ mount_block = '''            if (window.ClawCustomLevels && typeof window.ClawCu
             }
 '''
 
+# The native Collection v2 home launches index.html with mode=custom/favorites.
+# Route those *library* requests to levels.html before the game runtime starts.
+# A selected level also uses mode=custom, but carries level/archive; never redirect it.
+router_marker = 'Collection v2 mode router'
+router_anchor = '</head>'
+router_block = '''    <script>
+      // Collection v2 mode router.
+      (() => {
+        const params = new URLSearchParams(window.location.search);
+        if (params.get('android') !== '1' || params.get('shell') !== 'v2') return;
+        const mode = params.get('mode');
+        const selectedLevel = params.get('level') || params.get('archive');
+        if (!selectedLevel && (mode === 'custom' || mode === 'favorites')) {
+          const filter = mode === 'favorites' ? 'favorites' : 'all';
+          window.location.replace(`levels.html?android=1&shell=v2&filter=${filter}`);
+        }
+      })();
+    </script>
+'''
+
 asset_marker = 'Collection v2 Android embedded CLAW.REZ bridge'
 asset_anchor = '''async function prepareAssetStorage() {
   try {
@@ -59,6 +79,11 @@ patched_asset_dirs = set()
 for arg in sys.argv[1:]:
     path = Path(arg)
     text = path.read_text(encoding='utf-8')
+
+    if router_marker not in text:
+        if router_anchor not in text:
+            raise RuntimeError(f"head anchor missing in {path}")
+        text = text.replace(router_anchor, router_block + router_anchor, 1)
 
     if 'src="custom-levels.js"' not in text:
         if module_anchor not in text:

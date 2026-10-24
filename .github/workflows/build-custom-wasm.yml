@@ -1,11 +1,14 @@
-name: Build Collection WASM runtime
+name: Build Native Custom Menu WASM runtime
 
 on:
   push:
     branches:
-      - android-custom-levels-v1
+      - native-custom-menu-v1
     paths:
       - 'scripts/patch_custom_level_cache.py'
+      - 'scripts/patch_native_custom_menu.py'
+      - 'data/custom-levels-menu.json'
+      - 'web/native-custom-menu.js'
       - '.github/workflows/build-custom-wasm.yml'
   workflow_dispatch:
 
@@ -28,8 +31,8 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y ninja-build zip unzip python3-pip
-          python3 -m pip install --user --upgrade cmake
+          sudo apt-get install -y ninja-build zip unzip python3-pip fonts-dejavu-core
+          python3 -m pip install --user --upgrade cmake pillow
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Fetch exact upstream source
@@ -40,7 +43,7 @@ jobs:
           git -C upstream checkout "$UPSTREAM_SOURCE_COMMIT"
           test "$(git -C upstream rev-parse HEAD)" = "$UPSTREAM_SOURCE_COMMIT"
 
-      - name: Apply Collection engine patch
+      - name: Apply Collection custom-level cache patch
         shell: bash
         run: |
           set -euo pipefail
@@ -50,6 +53,22 @@ jobs:
           grep -q 'CUSTOM_LEVEL_RESOURCE' OpenClaw/Engine/SharedDefines.h
           grep -q 'CUSTOM_LEVEL.ZIP' OpenClaw/Engine/GameApp/BaseGameApp.cpp
           grep -q 'GetResourceMgr()->VGetHandle' OpenClaw/Engine/Resource/Loaders/WwdLoader.cpp
+
+      - name: Generate native 623-level menu
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p upstream/data
+          cp data/custom-levels-menu.json upstream/data/custom-levels-menu.json
+          cp scripts/patch_native_custom_menu.py upstream/patch_native_custom_menu.py
+          cd upstream
+          python3 patch_native_custom_menu.py
+          grep -q 'MenuPage_CustomLevels_104' OpenClaw/Engine/UserInterface/UserInterface.h
+          grep -q 'CAPITAN_ARTIGLIO_CUSTOM_LEVEL_PAGES' Build_Release/ASSETS/MENU.xml
+          grep -q 'CUSTOM_LEVEL_623' Build_Release/ASSETS/MENU.xml
+          test -f Build_Release/ASSETS/CUSTOM_LEVELS/LABELS/623_active.png
+          echo "Native custom menu generated"
+          du -sh Build_Release/ASSETS/CUSTOM_LEVELS
 
       - name: Install Emscripten SDK
         shell: bash
@@ -80,6 +99,9 @@ jobs:
           cp upstream/Build_Release/openclaw.wasm collection-runtime/
           cp upstream/Build_Release/openclaw.data collection-runtime/
           cp upstream/Build_Release/claw-web.html collection-runtime/index.html
+          cp web/native-custom-menu.js collection-runtime/native-custom-menu.js
+          cp data/custom-levels-menu.json collection-runtime/custom-levels-menu.json
+          cp upstream/Build_Release/ASSETS/MENU.xml collection-runtime/MENU.generated.xml
           for f in upstream/Build_Release/*.js upstream/Build_Release/*.css upstream/Build_Release/*.webmanifest upstream/Build_Release/*.png upstream/Build_Release/*.ico upstream/Build_Release/*.sf2; do
             [ -e "$f" ] && cp "$f" collection-runtime/ || true
           done
@@ -87,10 +109,10 @@ jobs:
           sha256sum collection-runtime/openclaw.js collection-runtime/openclaw.wasm collection-runtime/openclaw.data > collection-runtime/SHA256SUMS.txt
           du -h collection-runtime/openclaw.*
 
-      - name: Upload Collection runtime
+      - name: Upload Native Custom Menu runtime
         uses: actions/upload-artifact@v4
         with:
-          name: Capitan-Artiglio-Collection-runtime
+          name: Capitan-Artiglio-Native-Custom-Menu-runtime
           path: collection-runtime/
           if-no-files-found: error
           retention-days: 7

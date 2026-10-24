@@ -1,11 +1,14 @@
-name: Build Collection WASM runtime
+name: Build Collection WASM runtime v2
 
 on:
   push:
     branches:
-      - android-custom-levels-v1
+      - android-custom-levels-v2-performance
     paths:
       - 'scripts/patch_custom_level_cache.py'
+      - 'scripts/patch_wasm_level_loading.py'
+      - 'scripts/patch_resource_lru.py'
+      - 'scripts/patch_stackfix.py'
       - '.github/workflows/build-custom-wasm.yml'
   workflow_dispatch:
 
@@ -40,16 +43,24 @@ jobs:
           git -C upstream checkout "$UPSTREAM_SOURCE_COMMIT"
           test "$(git -C upstream rev-parse HEAD)" = "$UPSTREAM_SOURCE_COMMIT"
 
-      - name: Apply Collection engine patch
+      - name: Apply custom-level and performance engine patches
         shell: bash
         run: |
           set -euo pipefail
           cp scripts/patch_custom_level_cache.py upstream/patch_custom_level_cache.py
-          cd upstream
-          python3 patch_custom_level_cache.py
-          grep -q 'CUSTOM_LEVEL_RESOURCE' OpenClaw/Engine/SharedDefines.h
-          grep -q 'CUSTOM_LEVEL.ZIP' OpenClaw/Engine/GameApp/BaseGameApp.cpp
-          grep -q 'GetResourceMgr()->VGetHandle' OpenClaw/Engine/Resource/Loaders/WwdLoader.cpp
+          (cd upstream && python3 patch_custom_level_cache.py)
+          python3 scripts/patch_wasm_level_loading.py upstream
+          python3 scripts/patch_resource_lru.py upstream
+          python3 scripts/patch_stackfix.py upstream
+
+          grep -q 'CUSTOM_LEVEL_RESOURCE' upstream/OpenClaw/Engine/SharedDefines.h
+          grep -q 'CUSTOM_LEVEL.ZIP' upstream/OpenClaw/Engine/GameApp/BaseGameApp.cpp
+          grep -q 'GetResourceMgr()->VGetHandle' upstream/OpenClaw/Engine/Resource/Loaders/WwdLoader.cpp
+          grep -q '_matchCache.find(patternCopy)' upstream/OpenClaw/Engine/Resource/ResourceCache.cpp
+          grep -q '_lruIterators' upstream/OpenClaw/Engine/Resource/ResourceCache.cpp
+          grep -q 'bulk preload skipped' upstream/OpenClaw/Engine/GameApp/BaseGameLogic.cpp
+          grep -q 'clamping to 256' upstream/OpenClaw/Engine/Util/Converters.cpp
+          grep -q 'clawLastLoadStatus' upstream/Build_Release/claw-web.html
 
       - name: Install Emscripten SDK
         shell: bash
@@ -84,13 +95,14 @@ jobs:
             [ -e "$f" ] && cp "$f" collection-runtime/ || true
           done
           printf '%s\n' "$UPSTREAM_SOURCE_COMMIT" > collection-runtime/SOURCE_COMMIT.txt
+          printf '%s\n' 'custom-level-cache + nonblocking-load + match-cache + lru + stackfix' > collection-runtime/PATCHSET.txt
           sha256sum collection-runtime/openclaw.js collection-runtime/openclaw.wasm collection-runtime/openclaw.data > collection-runtime/SHA256SUMS.txt
           du -h collection-runtime/openclaw.*
 
       - name: Upload Collection runtime
         uses: actions/upload-artifact@v4
         with:
-          name: Capitan-Artiglio-Collection-runtime
+          name: Capitan-Artiglio-Collection-runtime-v2
           path: collection-runtime/
           if-no-files-found: error
           retention-days: 7

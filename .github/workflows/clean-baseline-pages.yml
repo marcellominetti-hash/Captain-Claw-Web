@@ -58,23 +58,23 @@ jobs:
           mkdir -p _site/baseline
           rsync -a baseline-site/ _site/baseline/
 
-          # Fresh PWA path: clone the known-working baseline, then change only
-          # PWA metadata/shell identity. Engine binaries remain byte-identical.
+          # Capitan Artiglio PWA is a clone of the known-working baseline.
           rsync -a baseline-site/ capitan-site/
 
-          cat > capitan-site/capitan-artiglio.webmanifest <<'EOF'
+          # New manifest filename + new app id. This deliberately breaks any
+          # association with the previously installed, non-launching WebAPK.
+          cat > capitan-site/capitan-artiglio-v2.webmanifest <<'EOF'
           {
-            "id": "/Captain-Claw-Web/capitan-artiglio/app-v1",
+            "id": "/Captain-Claw-Web/capitan-artiglio/app-v2",
             "name": "Capitan Artiglio",
             "short_name": "Capitan Artiglio",
             "description": "Capitan Artiglio - Captain Claw (1997) sul browser",
-            "start_url": "/Captain-Claw-Web/capitan-artiglio/?source=pwa",
+            "start_url": "/Captain-Claw-Web/capitan-artiglio/pwa-launch.html?v=2",
             "scope": "/Captain-Claw-Web/capitan-artiglio/",
-            "display": "fullscreen",
+            "display": "standalone",
             "orientation": "landscape",
             "background_color": "#000000",
             "theme_color": "#000000",
-            "launch_handler": {"client_mode": ["navigate-new", "auto"]},
             "icons": [
               {"src": "android-chrome-192x192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
               {"src": "android-chrome-512x512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
@@ -83,6 +83,35 @@ jobs:
             "categories": ["games"],
             "lang": "it"
           }
+          EOF
+
+          # Minimal start page. Android launches this first; it then navigates
+          # to the known-working game page. Meta refresh is a fallback if JS is
+          # delayed or disabled.
+          cat > capitan-site/pwa-launch.html <<'EOF'
+          <!doctype html>
+          <html lang="it">
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+            <meta name="theme-color" content="#000000">
+            <meta http-equiv="refresh" content="1;url=./index.html?source=pwa-v2">
+            <link rel="manifest" href="./capitan-artiglio-v2.webmanifest?v=2">
+            <title>Capitan Artiglio</title>
+            <style>
+              html,body{margin:0;width:100%;height:100%;background:#000;color:#fff;font-family:system-ui,sans-serif}
+              body{display:flex;align-items:center;justify-content:center;text-align:center}
+            </style>
+          </head>
+          <body>
+            <div>Avvio di Capitan Artiglio…</div>
+            <script>
+              setTimeout(function () {
+                location.replace('./index.html?source=pwa-v2');
+              }, 60);
+            </script>
+          </body>
+          </html>
           EOF
 
           python3 - <<'PY'
@@ -95,7 +124,7 @@ jobs:
                   continue
               s = p.read_text(encoding='utf-8')
               s = re.sub(r'<link rel="manifest" href="[^"]+"\s*/?>',
-                         '<link rel="manifest" href="capitan-artiglio.webmanifest?v=1" />', s, count=1)
+                         '<link rel="manifest" href="capitan-artiglio-v2.webmanifest?v=2" />', s, count=1)
               s = re.sub(r'<title>.*?</title>', '<title>Capitan Artiglio</title>', s, count=1)
               s = s.replace('content="Claw Web"', 'content="Capitan Artiglio"')
               s = s.replace('Captain Claw (1997) reimplemented for the browser - unofficial fan project',
@@ -105,14 +134,16 @@ jobs:
           sw = Path('capitan-site/sw.js')
           text = sw.read_text(encoding='utf-8')
           text, n = re.subn(r'const CACHE_VERSION = "[^"]+";',
-                            'const CACHE_VERSION = "capitan-artiglio-pwa-v1";',
+                            'const CACHE_VERSION = "capitan-artiglio-pwa-v2";',
                             text, count=1)
           if n != 1:
               raise SystemExit('Could not set Capitan Artiglio SW cache version')
+          # Cache the actual launch resources, not the legacy manifest.
+          text = text.replace('"./site.webmanifest",',
+                              '"./capitan-artiglio-v2.webmanifest",\n  "./pwa-launch.html",')
           sw.write_text(text, encoding='utf-8')
 
-          # Fresh scope: no inherited kill switch required.
-          Path('capitan-site/sw-control.json').write_text('{"unregister":""}\n', encoding='utf-8')
+          Path('capitan-site/sw-control.json').write_text('{"unregister":"capitan-artiglio-launch-v2"}\n', encoding='utf-8')
           PY
 
           mkdir -p _site/capitan-artiglio
@@ -134,10 +165,12 @@ jobs:
 
           grep -q 'clean-diagnostics.js' _site/baseline/index.html
           grep -q 'clean-diagnostics.js' _site/capitan-artiglio/index.html
-          grep -q 'capitan-artiglio.webmanifest?v=1' _site/capitan-artiglio/index.html
-          grep -q '"name": "Capitan Artiglio"' _site/capitan-artiglio/capitan-artiglio.webmanifest
-          grep -q '"id": "/Captain-Claw-Web/capitan-artiglio/app-v1"' _site/capitan-artiglio/capitan-artiglio.webmanifest
-          grep -q 'const CACHE_VERSION = "capitan-artiglio-pwa-v1";' _site/capitan-artiglio/sw.js
+          grep -q 'capitan-artiglio-v2.webmanifest?v=2' _site/capitan-artiglio/index.html
+          grep -q '"name": "Capitan Artiglio"' _site/capitan-artiglio/capitan-artiglio-v2.webmanifest
+          grep -q '"id": "/Captain-Claw-Web/capitan-artiglio/app-v2"' _site/capitan-artiglio/capitan-artiglio-v2.webmanifest
+          grep -q 'pwa-launch.html?v=2' _site/capitan-artiglio/capitan-artiglio-v2.webmanifest
+          grep -q 'source=pwa-v2' _site/capitan-artiglio/pwa-launch.html
+          grep -q 'const CACHE_VERSION = "capitan-artiglio-pwa-v2";' _site/capitan-artiglio/sw.js
           node --check _site/capitan-artiglio/clean-diagnostics.js
           node --check _site/capitan-artiglio/sw.js
 

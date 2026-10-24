@@ -132,6 +132,21 @@ jobs:
           grep -q 'applyTouchPreferencesToWeb' "$MAIN"
           grep -q 'touch_scale_pct' "$MAIN"
 
+      - name: Apply Android controller settings
+        shell: bash
+        run: |
+          set -euo pipefail
+          MAIN=android/app/src/main/java/com/capitanartiglio/app/MainActivity.java
+          WEBROOT=android/app/src/main/assets/www
+          python3 scripts/patch_gamepad_controller_config.py "$WEBROOT/gamepad-bridge.js"
+          python3 scripts/patch_android_controller_settings.py "$MAIN"
+          grep -q 'Capitan Artiglio controller config v1' "$WEBROOT/gamepad-bridge.js"
+          grep -q 'setCapitanControllerConfig' "$WEBROOT/gamepad-bridge.js"
+          grep -q 'Capitan Artiglio controller settings v1' "$MAIN"
+          grep -q 'applyControllerPreferencesToWeb' "$MAIN"
+          grep -q 'pad_deadzone_pct' "$MAIN"
+          grep -q 'pad_rumble_pct' "$MAIN"
+
       - name: Build Collection v2 base APK
         shell: bash
         run: gradle -p android :app:assembleDebug --stacktrace
@@ -145,6 +160,7 @@ jobs:
           unzip -t "$APK" >/dev/null
           unzip -l "$APK" | grep -q 'assets/www/levels.html'
           unzip -l "$APK" | grep -q 'assets/www/custom-levels.js'
+          unzip -p "$APK" assets/www/gamepad-bridge.js | grep -q 'Capitan Artiglio controller config v1'
           if unzip -l "$APK" | grep -qi 'CLAW.REZ'; then
             echo 'ERROR: CI base APK contains CLAW.REZ' >&2
             exit 1

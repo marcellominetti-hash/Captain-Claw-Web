@@ -220,7 +220,8 @@
       return;
     }
     rememberRecent(level.id);
-    try { if (window.CapitanAndroid) window.CapitanAndroid.saveMode('custom'); } catch (_) {}
+    const continueToken = ['custom', level.id, String(base), archive].join('|');
+    try { if (window.CapitanAndroid) window.CapitanAndroid.saveMode(continueToken); } catch (_) {}
     vibrate(28);
     const qs = new URLSearchParams({
       android: '1', mode: 'custom', level: level.id,

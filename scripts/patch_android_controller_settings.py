@@ -40,6 +40,18 @@ if anchor not in text:
     raise RuntimeError("page-finished touch apply anchor missing")
 text = text.replace(anchor, replacement, 1)
 
+# Make the expanded settings view scrollable in landscape.
+anchor = "        box.setPadding(dp(24), dp(10), dp(24), dp(4));\n"
+replacement = anchor + (
+    "\n        ScrollView settingsScroll = new ScrollView(this);\n"
+    "        settingsScroll.setFillViewport(false);\n"
+    "        settingsScroll.addView(box, new ScrollView.LayoutParams(\n"
+    "                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));\n"
+)
+if anchor not in text:
+    raise RuntimeError("settings scroll anchor missing")
+text = text.replace(anchor, replacement, 1)
+
 # Add controller UI after touch controls.
 anchor = '''        box.addView(insetSeek);
 
@@ -132,6 +144,13 @@ controller_ui = '''        box.addView(insetSeek);
 if anchor not in text:
     raise RuntimeError("touch settings UI tail anchor missing")
 text = text.replace(anchor, controller_ui, 1)
+
+# Use the scroll wrapper in the dialog.
+anchor = "                .setView(box)\n"
+replacement = "                .setView(settingsScroll)\n"
+if anchor not in text:
+    raise RuntimeError("dialog view anchor missing")
+text = text.replace(anchor, replacement, 1)
 
 # Validate A/B/X/Y as a permutation so no action becomes unreachable.
 anchor = '''        dialog.setOnShowListener(d -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {

@@ -92,10 +92,6 @@ jobs:
           p.write_text(s,encoding='utf-8')
           print('v6.3 duplicate component tolerance applied')
 
-      - name: Add actor diagnostics
-        run: |
-          python3 scripts/patch_actor_diagnostics.py engine
-
       - name: Install build prerequisites
         run: |
           sudo apt-get update
@@ -128,7 +124,6 @@ jobs:
           test -s engine/Build_Release/openclaw.data
           test -s engine/Build_Release/ASSETS.ZIP
           grep -q '\[DUPCOMPAT\] Duplicate component skipped' engine/OpenClaw/Engine/Actor/Actor.cpp
-          grep -q 'PortActorStatus' engine/OpenClaw/Engine/Actor/ActorFactory.cpp
           grep -q '\[STAGEBAR\] 80 tile metadata complete' engine/OpenClaw/Engine/GameApp/BaseGameLogic.cpp
           strings engine/Build_Release/openclaw.wasm | grep -q '\[DUPCOMPAT\] Duplicate component skipped'
           strings engine/Build_Release/openclaw.wasm | grep -q '\[COMPAT\] Continuing level after skipping unsupported actor prototypes'

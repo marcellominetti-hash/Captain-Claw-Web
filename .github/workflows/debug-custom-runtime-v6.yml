@@ -1,0 +1,165 @@
+name: Debug OpenClaw Custom Runtime v6
+
+on:
+  push:
+    branches: [compat-engine-v3]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  debug-v6:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout exact engine
+        run: |
+          git clone https://github.com/arthurboss/claw-web.git engine
+          git -C engine checkout e723d3d48b5ba2cc723751209954cfc46c82d202
+
+      - name: Reuse v4 compatibility patch
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          y=Path('.github/workflows/build-custom-runtime-v4.yml').read_text()
+          marker='      - name: Apply compatibility and real custom-level patches\n'
+          part=y.split(marker,1)[1].split('\n      - name: Install build prerequisites',1)[0]
+          body=part.split('        run: |\n',1)[1]
+          Path('/tmp/v4patch.py').write_text('\n'.join(line[10:] if line.startswith('          ') else line for line in body.splitlines())+'\n')
+          PY
+          python3 /tmp/v4patch.py
+
+      - name: Reuse v5 compatibility patch
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          y=Path('.github/workflows/debug-custom-runtime-v5.yml').read_text()
+          marker='      - name: Apply v5 general custom-level compatibility layer\n'
+          part=y.split(marker,1)[1].split('\n      - name: Install build prerequisites',1)[0]
+          body=part.split('        run: |\n',1)[1]
+          Path('/tmp/v5patch.py').write_text('\n'.join(line[10:] if line.startswith('          ') else line for line in body.splitlines())+'\n')
+          PY
+          python3 /tmp/v5patch.py
+
+      - name: Apply v6 tolerant fan-level loader
+        shell: python
+        run: |
+          from pathlib import Path
+          root=Path('engine')
+
+          conv=root/'OpenClaw/Engine/Util/Converters.cpp'
+          s=conv.read_text(encoding='utf-8')
+
+          # Fan levels may contain known engine logics whose concrete actor prototype
+          # is not implemented. Stock OpenClaw deliberately FAILs the whole level.
+          # For the custom catalogue, skip those actors and keep the rest of the level.
+          old='''        FAIL("Failed to load level " + ToStr(levelNumber) + " due to unimplemented actor prototypes");'''
+          new='''        LOG_WARNING("[COMPAT] Continuing level after skipping unsupported actor prototypes");'''
+          if old not in s:
+              raise SystemExit('unimplemented actor FAIL anchor missing')
+          s=s.replace(old,new,1)
+
+          # Defensive path handling before indexing [0].
+          old='''    std::string tileRootDirPath = wapWwd->properties.imageDirectoryPath;\n    std::replace(tileRootDirPath.begin(), tileRootDirPath.end(), '\\\\', '/');\n    // Level 2 does not have /LEVEL2/TILES but only LEVEL2/TILES\n    if (tileRootDirPath[0] != '/')\n    {\n        tileRootDirPath.insert(0, "/");\n    }'''
+          new='''    std::string tileRootDirPath = wapWwd->properties.imageDirectoryPath;\n    std::replace(tileRootDirPath.begin(), tileRootDirPath.end(), '\\\\', '/');\n    if (tileRootDirPath.empty())\n    {\n        tileRootDirPath = "/LEVEL" + ToStr(levelNumber) + "/TILES";\n        LOG_WARNING("[COMPAT] Empty tile directory; using " + tileRootDirPath);\n    }\n    else if (tileRootDirPath[0] != '/')\n    {\n        tileRootDirPath.insert(0, "/");\n    }'''
+          if old not in s:
+              raise SystemExit('tile root defensive anchor missing')
+          conv.write_text(s.replace(old,new,1),encoding='utf-8')
+
+          logic=root/'OpenClaw/Engine/GameApp/BaseGameLogic.cpp'
+          s=logic.read_text(encoding='utf-8')
+
+          # Diagnostic loading milestones. The stock bar stays at 0 until all WWD
+          # conversion has finished, which hid the exact failure stage.
+          old='''    WapWwd* pWwd = WwdResourceLoader::LoadAndReturnWwd(xmlLevelResource);\n    assert(pWwd != NULL);\n\n    TiXmlElement* pXmlLevelRoot = WwdToXml(pWwd, m_pCurrentLevel->GetLevelNumber());'''
+          new='''    loadingProgress = 2.0f;\n    RenderLoadingScreen(pBackgroundImage, backgroundRect, scale, loadingProgress);\n    WapWwd* pWwd = WwdResourceLoader::LoadAndReturnWwd(xmlLevelResource);\n    if (pWwd == NULL)\n    {\n        LOG_ERROR("[CUSTOM] Stage 2: WWD load failed: " + std::string(xmlLevelResource));\n        return false;\n    }\n\n    loadingProgress = 5.0f;\n    RenderLoadingScreen(pBackgroundImage, backgroundRect, scale, loadingProgress);\n    TiXmlElement* pXmlLevelRoot = WwdToXml(pWwd, m_pCurrentLevel->GetLevelNumber());'''
+          if old not in s:
+              raise SystemExit('WWD load stage anchor missing')
+          s=s.replace(old,new,1)
+
+          old='''    if (pXmlLevelRoot == NULL)\n    {\n        LOG_ERROR("Could not load level resource file: " + std::string(xmlLevelResource));\n        return false;\n    }\n\n    // Get level palette'''
+          new='''    if (pXmlLevelRoot == NULL)\n    {\n        LOG_ERROR("[CUSTOM] Stage 5: WWD to XML conversion failed: " + std::string(xmlLevelResource));\n        return false;\n    }\n    loadingProgress = 8.0f;\n    RenderLoadingScreen(pBackgroundImage, backgroundRect, scale, loadingProgress);\n\n    // Get level palette'''
+          if old not in s:
+              raise SystemExit('WWD XML stage anchor missing')
+          logic.write_text(s.replace(old,new,1),encoding='utf-8')
+
+          print('v6 tolerant loader applied')
+
+      - name: Audit remaining converter asserts
+        run: |
+          grep -n "assert(" engine/OpenClaw/Engine/Util/Converters.cpp engine/OpenClaw/Engine/Util/Converters.h > converter-asserts-v6.txt || true
+          cat converter-asserts-v6.txt
+
+      - name: Install build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential ninja-build python3 python3-pip git zip
+          python3 -m pip install --user --break-system-packages 'cmake>=4.3.2'
+          hash -r
+
+      - name: Install Emscripten
+        run: |
+          git clone --depth=1 https://github.com/emscripten-core/emsdk.git engine/emsdk
+          cd engine/emsdk
+          ./emsdk install latest
+          ./emsdk activate latest
+
+      - name: Compile v6 and capture log
+        shell: bash
+        run: |
+          set +e
+          cd engine
+          source ./emsdk/emsdk_env.sh
+          chmod +x build_wasm.sh patch_sdl2_shaders.sh || true
+          ./build_wasm.sh > ../v6-build.log 2>&1
+          rc=$?
+          echo "$rc" > ../v6-build.rc
+          tail -n 180 ../v6-build.log || true
+          exit 0
+
+      - name: Verify v6 runtime
+        if: always()
+        run: |
+          rc=$(cat v6-build.rc)
+          test "$rc" = "0"
+          test -s engine/Build_Release/openclaw.wasm
+          test -s engine/Build_Release/openclaw.js
+          test -s engine/Build_Release/openclaw.data
+          test -s engine/Build_Release/ASSETS.ZIP
+          grep -q '\[COMPAT\] Continuing level after skipping unsupported actor prototypes' engine/OpenClaw/Engine/Util/Converters.cpp
+          grep -q '\[CUSTOM\] Stage 2: WWD load failed' engine/OpenClaw/Engine/GameApp/BaseGameLogic.cpp
+          strings engine/Build_Release/openclaw.wasm | grep -q '\[COMPAT\] Continuing level after skipping unsupported actor prototypes'
+          sha256sum engine/Build_Release/openclaw.wasm engine/Build_Release/openclaw.js engine/Build_Release/openclaw.data engine/Build_Release/ASSETS.ZIP > engine/Build_Release/custom-v6-sha256.txt
+          cat engine/Build_Release/custom-v6-sha256.txt
+
+      - name: Upload v6 diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v6-diagnostics
+          path: |
+            v6-build.log
+            v6-build.rc
+            converter-asserts-v6.txt
+          retention-days: 3
+
+      - name: Upload v6 runtime
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openclaw-custom-runtime-v6
+          path: |
+            engine/Build_Release/openclaw.wasm
+            engine/Build_Release/openclaw.js
+            engine/Build_Release/openclaw.data
+            engine/Build_Release/ASSETS.ZIP
+            engine/Build_Release/custom-v6-sha256.txt
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Preserve failure state
+        run: |
+          test "$(cat v6-build.rc)" = "0"

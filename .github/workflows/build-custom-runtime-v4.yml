@@ -1,0 +1,161 @@
+name: Build OpenClaw Custom Runtime v4
+
+on:
+  push:
+    branches: [compat-engine-v3]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-custom-runtime-v4:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout controller repo
+        uses: actions/checkout@v4
+
+      - name: Checkout exact claw-web source
+        run: |
+          git clone https://github.com/arthurboss/claw-web.git engine
+          git -C engine checkout e723d3d48b5ba2cc723751209954cfc46c82d202
+
+      - name: Apply compatibility and real custom-level patches
+        shell: python
+        run: |
+          from pathlib import Path
+
+          root = Path('engine')
+          conv = root / 'OpenClaw/Engine/Util/Converters.h'
+          actor = root / 'OpenClaw/Engine/Actor/ActorTemplates.cpp'
+          app = root / 'OpenClaw/Engine/GameApp/BaseGameApp.cpp'
+          logic = root / 'OpenClaw/Engine/GameApp/BaseGameLogic.cpp'
+
+          # Existing compatibility patches -------------------------------------------------
+          s = actor.read_text(encoding='utf-8')
+          old = '''        auto findIt = s_ImageSetToPickupTypeMap.find(pickupImageSet);\n        if (findIt == s_ImageSetToPickupTypeMap.end())\n        {\n            LOG_ERROR("Could not find requested enum. Offending key: " + pickupImageSet);\n            assert(false);\n        }\n\n        return findIt->second;'''
+          new = '''        auto findIt = s_ImageSetToPickupTypeMap.find(pickupImageSet);\n        if (findIt == s_ImageSetToPickupTypeMap.end())\n        {\n            LOG_WARNING("[COMPAT] Unknown pickup image set: " + pickupImageSet + " - deferring to WWD logic fallback");\n            return PickupType_None;\n        }\n\n        return findIt->second;'''
+          if old not in s: raise SystemExit('pickup enum anchor not found')
+          actor.write_text(s.replace(old, new, 1), encoding='utf-8')
+
+          s = conv.read_text(encoding='utf-8')
+          old = '''inline ElevatorStepDef GetElevatorStepDef(int moveType, int value)\n{\n    assert(moveType >= 1 && moveType <= 9);\n    assert(value > 0);'''
+          new = '''inline ElevatorStepDef GetElevatorStepDef(int moveType, int value)\n{\n    if (moveType < 1 || moveType > 9 || value <= 0)\n    {\n        LOG_WARNING("[COMPAT] Invalid PathElevator step; converting to safe wait step");\n        moveType = 5;\n        value = 60000;\n    }'''
+          if old not in s: raise SystemExit('elevator step anchor not found')
+          s = s.replace(old, new, 1)
+          old = '''        assert(pathElevatorDef.elevatorPath.size() >= 1);\n\n        Point position(wwdObject->x, wwdObject->y);'''
+          new = '''        if (pathElevatorDef.elevatorPath.empty())\n        {\n            LOG_WARNING("[COMPAT] Empty PathElevator path; converting to stationary platform");\n            pathElevatorDef.elevatorPath.push_back(GetElevatorStepDef(5, 60000));\n        }\n\n        Point position(wwdObject->x, wwdObject->y);'''
+          if old not in s: raise SystemExit('empty elevator anchor not found')
+          s = s.replace(old, new, 1)
+          old = '''        SAFE_DELETE(pActorElem);\n\n        ParamMap paramMap;'''
+          new = '''        ParamMap paramMap;'''
+          if old not in s: raise SystemExit('pickup delete anchor not found')
+          s = s.replace(old, new, 1)
+          old = '''        PickupType pickupType = ActorTemplates::StringToEnum_ImageSetToPickupType(wwdObject->imageSet);\n\n        return ActorTemplates::CreateXmlData_PickupActor(pickupType, Point(wwdObject->x, wwdObject->y), true, paramMap);'''
+          new = '''        PickupType pickupType = ActorTemplates::StringToEnum_ImageSetToPickupType(wwdObject->imageSet);\n\n        if (pickupType == PickupType_None)\n        {\n            if (logic == "EndOfLevelPowerup") pickupType = PickupType_Mappiece;\n            else if (logic == "BossWarp")\n            {\n                pickupType = PickupType_BossWarp;\n                paramMap["IsGlitter"] = "false";\n                paramMap["DestinationX"] = ToStr(wwdObject->speedX);\n                paramMap["DestinationY"] = ToStr(wwdObject->speedY);\n            }\n            else if (logic == "HealthPowerup") pickupType = PickupType_Health_Breadwater;\n            else if (logic == "AmmoPowerup")\n            {\n                if (imageSet.find("DYNAMITE") != std::string::npos) pickupType = PickupType_Ammo_Dynamite;\n                else if (imageSet.find("MAGIC") != std::string::npos) pickupType = PickupType_Ammo_Magic_5;\n                else pickupType = PickupType_Ammo_Shot;\n            }\n            else if (logic == "MagicPowerup") pickupType = PickupType_Ammo_Magic_5;\n            else\n            {\n                LOG_WARNING("[COMPAT] Unsupported pickup kept render-only: " + logic + " / " + imageSet);\n                return pActorElem;\n            }\n        }\n\n        SAFE_DELETE(pActorElem);\n        return ActorTemplates::CreateXmlData_PickupActor(pickupType, Point(wwdObject->x, wwdObject->y), true, paramMap);'''
+          if old not in s: raise SystemExit('pickup fallback anchor not found')
+          conv.write_text(s.replace(old, new, 1), encoding='utf-8')
+
+          # Real selected-level resource cache ---------------------------------------------
+          s = app.read_text(encoding='utf-8')
+          if '#include <fstream>' not in s:
+              s = s.replace('#include <cctype>', '#include <cctype>\n#include <fstream>', 1)
+
+          anchor = '''  pCustomCache->RegisterLoader(PcxResourceLoader::Create());\n  pCustomCache->RegisterLoader(PngResourceLoader::Create());\n\n  m_pResourceMgr = new ResourceMgrImpl();\n  // Custom cache first so ASSETS.ZIP can override CLAW.REZ assets\n  m_pResourceMgr->VAddResourceCache(pCustomCache);\n  m_pResourceMgr->VAddResourceCache(m_pResourceCache);'''
+          replacement = '''  pCustomCache->RegisterLoader(PcxResourceLoader::Create());\n  pCustomCache->RegisterLoader(PngResourceLoader::Create());\n\n  // Capitan Artiglio Android: when JS mounted a selected fan level before main(),\n  // expose that ZIP as the highest-priority resource cache. This is the file that\n  // older builds mounted but the engine never actually opened.\n  std::shared_ptr<ResourceCache> pSelectedLevelCache;\n#ifdef __EMSCRIPTEN__\n  {\n    std::ifstream selectedLevelFile("/CUSTOM_LEVEL.ZIP", std::ios::binary);\n    if (selectedLevelFile.good())\n    {\n      selectedLevelFile.close();\n      IResourceFile *pSelectedArchive = new ResourceZipArchive("/CUSTOM_LEVEL.ZIP");\n      pSelectedLevelCache.reset(new ResourceCache(64, pSelectedArchive, "CUSTOM_LEVEL_ZIP"));\n      if (!pSelectedLevelCache->Init())\n      {\n        LOG_ERROR("[CUSTOM] Failed to initialize /CUSTOM_LEVEL.ZIP resource cache");\n        return false;\n      }\n      pSelectedLevelCache->RegisterLoader(DefaultResourceLoader::Create());\n      pSelectedLevelCache->RegisterLoader(XmlResourceLoader::Create());\n      pSelectedLevelCache->RegisterLoader(WwdResourceLoader::Create());\n      pSelectedLevelCache->RegisterLoader(PalResourceLoader::Create());\n      pSelectedLevelCache->RegisterLoader(PidResourceLoader::Create());\n      pSelectedLevelCache->RegisterLoader(AniResourceLoader::Create());\n      pSelectedLevelCache->RegisterLoader(WavResourceLoader::Create());\n      pSelectedLevelCache->RegisterLoader(MidiResourceLoader::Create());\n      pSelectedLevelCache->RegisterLoader(PcxResourceLoader::Create());\n      pSelectedLevelCache->RegisterLoader(PngResourceLoader::Create());\n      LOG_WARNING("[CUSTOM] Selected-level resource cache active");\n    }\n  }\n#endif\n\n  m_pResourceMgr = new ResourceMgrImpl();\n  // Search order is deliberate: selected fan level -> ASSETS.ZIP -> CLAW.REZ.\n  if (pSelectedLevelCache) m_pResourceMgr->VAddResourceCache(pSelectedLevelCache);\n  m_pResourceMgr->VAddResourceCache(pCustomCache);\n  m_pResourceMgr->VAddResourceCache(m_pResourceCache);'''
+          if anchor not in s: raise SystemExit('resource cache anchor not found')
+          app.write_text(s.replace(anchor, replacement, 1), encoding='utf-8')
+
+          # Make classic resource loaders honor ResourceMgr priority -----------------------
+          loader_files = [
+              'OpenClaw/Engine/Resource/Loaders/WwdLoader.cpp',
+              'OpenClaw/Engine/Resource/Loaders/PalLoader.cpp',
+              'OpenClaw/Engine/Resource/Loaders/PidLoader.cpp',
+              'OpenClaw/Engine/Resource/Loaders/AniLoader.cpp',
+              'OpenClaw/Engine/Resource/Loaders/WavLoader.cpp',
+              'OpenClaw/Engine/Resource/Loaders/MidiLoader.cpp',
+          ]
+          for rel in loader_files:
+              p = root / rel
+              t = p.read_text(encoding='utf-8')
+              if '../ResourceMgr.h' not in t:
+                  marker = '#include "../../GameApp/BaseGameApp.h"'
+                  if marker in t:
+                      t = t.replace(marker, marker + '\n#include "../ResourceMgr.h"', 1)
+              before = t
+              t = t.replace('g_pApp->GetResourceCache()->GetHandle(&resource)', 'g_pApp->GetResourceMgr()->VGetHandle(&resource)')
+              t = t.replace('g_pApp->GetResourceCache()->GetHandle(&resource);', 'g_pApp->GetResourceMgr()->VGetHandle(&resource);')
+              if t == before:
+                  raise SystemExit(f'no loader replacement made in {rel}')
+              # Defensive null check before dereferencing a handle.
+              t = t.replace('shared_ptr<WwdResourceExtraData> extraData = std::static_pointer_cast<WwdResourceExtraData>(wwdHandle->GetExtraData());',
+                            'if (!wwdHandle) { LOG_ERROR("[CUSTOM] WWD resource not found: " + std::string(resourceString)); return NULL; }\n    shared_ptr<WwdResourceExtraData> extraData = std::static_pointer_cast<WwdResourceExtraData>(wwdHandle->GetExtraData());')
+              p.write_text(t, encoding='utf-8')
+
+          # Level-wide preload should include the selected level cache too.
+          s = logic.read_text(encoding='utf-8')
+          old = 'g_pApp->GetResourceCache()->Preload(levelPath, NULL);'
+          if old not in s: raise SystemExit('preload anchor not found')
+          s = s.replace(old, 'g_pApp->GetResourceMgr()->VPreload(levelPath, NULL);', 1)
+
+          # If a custom selection marker exists, skip the Claw menu completely and start it.
+          anchor = '''        case GameState_Initializing:\n        {\n#ifdef ANDROID\n            VChangeState(GameState_LoadingLevel);'''
+          replacement = '''        case GameState_Initializing:\n        {\n#ifdef __EMSCRIPTEN__\n            {\n                std::ifstream customMarker("/CUSTOM_LEVEL.NUM");\n                int customBase = 0;\n                if (customMarker.good() && (customMarker >> customBase) && customBase >= 1 && customBase <= 13)\n                {\n                    LOG_WARNING("[CUSTOM] Direct-start selected level base=" + ToStr(customBase));\n                    m_pCurrentLevel = shared_ptr<LevelData>(new LevelData(customBase, true, 0));\n                    VChangeState(GameState_LoadingLevel);\n                    break;\n                }\n            }\n#endif\n#ifdef ANDROID\n            VChangeState(GameState_LoadingLevel);'''
+          if anchor not in s: raise SystemExit('initial-state anchor not found')
+          logic.write_text(s.replace(anchor, replacement, 1), encoding='utf-8')
+
+          print('v4 real custom-level patches applied')
+
+      - name: Install build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential ninja-build python3 python3-pip git zip
+          python3 -m pip install --user --break-system-packages 'cmake>=4.3.2'
+          hash -r
+          cmake --version
+
+      - name: Install Emscripten
+        run: |
+          git clone --depth=1 https://github.com/emscripten-core/emsdk.git engine/emsdk
+          cd engine/emsdk
+          ./emsdk install latest
+          ./emsdk activate latest
+
+      - name: Build patched WASM runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd engine
+          source ./emsdk/emsdk_env.sh
+          chmod +x build_wasm.sh patch_sdl2_shaders.sh || true
+          ./build_wasm.sh
+
+      - name: Verify real custom-level runtime
+        run: |
+          set -euo pipefail
+          test -s engine/Build_Release/openclaw.wasm
+          test -s engine/Build_Release/openclaw.js
+          test -s engine/Build_Release/openclaw.data
+          grep -q '\[CUSTOM\] Selected-level resource cache active' engine/OpenClaw/Engine/GameApp/BaseGameApp.cpp
+          grep -q '\[CUSTOM\] Direct-start selected level base=' engine/OpenClaw/Engine/GameApp/BaseGameLogic.cpp
+          grep -q 'GetResourceMgr()->VGetHandle' engine/OpenClaw/Engine/Resource/Loaders/WwdLoader.cpp
+          grep -q '\[COMPAT\] Empty PathElevator path' engine/OpenClaw/Engine/Util/Converters.h
+          strings engine/Build_Release/openclaw.wasm | grep -q '\[CUSTOM\] Selected-level resource cache active'
+          strings engine/Build_Release/openclaw.wasm | grep -q '\[CUSTOM\] Direct-start selected level base='
+          sha256sum engine/Build_Release/openclaw.wasm engine/Build_Release/openclaw.js engine/Build_Release/openclaw.data engine/Build_Release/ASSETS.ZIP > engine/Build_Release/custom-v4-sha256.txt
+          cat engine/Build_Release/custom-v4-sha256.txt
+
+      - name: Upload custom runtime v4
+        uses: actions/upload-artifact@v4
+        with:
+          name: openclaw-custom-runtime-v4
+          path: |
+            engine/Build_Release/openclaw.wasm
+            engine/Build_Release/openclaw.js
+            engine/Build_Release/openclaw.data
+            engine/Build_Release/ASSETS.ZIP
+            engine/Build_Release/custom-v4-sha256.txt
+          if-no-files-found: error
+          retention-days: 7

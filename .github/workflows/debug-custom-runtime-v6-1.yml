@@ -1,0 +1,153 @@
+name: Debug OpenClaw Custom Runtime v6.1
+
+on:
+  push:
+    branches: [compat-engine-v3]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  debug-v6-1:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout exact engine
+        run: |
+          git clone https://github.com/arthurboss/claw-web.git engine
+          git -C engine checkout e723d3d48b5ba2cc723751209954cfc46c82d202
+
+      - name: Reuse v4 compatibility patch
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          y=Path('.github/workflows/build-custom-runtime-v4.yml').read_text()
+          marker='      - name: Apply compatibility and real custom-level patches\n'
+          part=y.split(marker,1)[1].split('\n      - name: Install build prerequisites',1)[0]
+          body=part.split('        run: |\n',1)[1]
+          Path('/tmp/v4patch.py').write_text('\n'.join(line[10:] if line.startswith('          ') else line for line in body.splitlines())+'\n')
+          PY
+          python3 /tmp/v4patch.py
+
+      - name: Reuse v5 compatibility patch
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          y=Path('.github/workflows/debug-custom-runtime-v5.yml').read_text()
+          marker='      - name: Apply v5 general custom-level compatibility layer\n'
+          part=y.split(marker,1)[1].split('\n      - name: Install build prerequisites',1)[0]
+          body=part.split('        run: |\n',1)[1]
+          Path('/tmp/v5patch.py').write_text('\n'.join(line[10:] if line.startswith('          ') else line for line in body.splitlines())+'\n')
+          PY
+          python3 /tmp/v5patch.py
+
+      - name: Reuse v6 tolerant loader patch
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          y=Path('.github/workflows/debug-custom-runtime-v6.yml').read_text()
+          marker='      - name: Apply v6 tolerant fan-level loader\n'
+          part=y.split(marker,1)[1].split('\n      - name: Audit remaining converter asserts',1)[0]
+          body=part.split('        run: |\n',1)[1]
+          Path('/tmp/v6patch.py').write_text('\n'.join(line[10:] if line.startswith('          ') else line for line in body.splitlines())+'\n')
+          PY
+          python3 /tmp/v6patch.py
+
+      - name: Remove remaining rope timing abort
+        shell: python
+        run: |
+          from pathlib import Path
+          p=Path('engine/OpenClaw/Engine/Util/Converters.h')
+          s=p.read_text(encoding='utf-8')
+          old='''        if (def.timeToFlayBackAndForth == 0)\n        {\n            def.timeToFlayBackAndForth = 1500;\n        }'''
+          new='''        if (def.timeToFlayBackAndForth <= 0)\n        {\n            LOG_WARNING("[COMPAT] Invalid rope timing; using 1500 ms fallback");\n            def.timeToFlayBackAndForth = 1500;\n        }'''
+          if old not in s:
+              raise SystemExit('rope timing fallback anchor missing')
+          s=s.replace(old,new,1)
+          old_assert='        assert(def.timeToFlayBackAndForth != 0);\n'
+          if old_assert not in s:
+              raise SystemExit('rope timing assert anchor missing')
+          s=s.replace(old_assert,'',1)
+          p.write_text(s,encoding='utf-8')
+          print('v6.1 rope timing guard applied')
+
+      - name: Audit remaining converter asserts
+        run: |
+          grep -n "assert(" engine/OpenClaw/Engine/Util/Converters.cpp engine/OpenClaw/Engine/Util/Converters.h > converter-asserts-v6-1.txt || true
+          cat converter-asserts-v6-1.txt
+
+      - name: Install build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential ninja-build python3 python3-pip git zip
+          python3 -m pip install --user --break-system-packages 'cmake>=4.3.2'
+          hash -r
+
+      - name: Install Emscripten
+        run: |
+          git clone --depth=1 https://github.com/emscripten-core/emsdk.git engine/emsdk
+          cd engine/emsdk
+          ./emsdk install latest
+          ./emsdk activate latest
+
+      - name: Compile v6.1 and capture log
+        shell: bash
+        run: |
+          set +e
+          cd engine
+          source ./emsdk/emsdk_env.sh
+          chmod +x build_wasm.sh patch_sdl2_shaders.sh || true
+          ./build_wasm.sh > ../v6-1-build.log 2>&1
+          rc=$?
+          echo "$rc" > ../v6-1-build.rc
+          tail -n 180 ../v6-1-build.log || true
+          exit 0
+
+      - name: Verify v6.1 runtime
+        if: always()
+        run: |
+          rc=$(cat v6-1-build.rc)
+          test "$rc" = "0"
+          test -s engine/Build_Release/openclaw.wasm
+          test -s engine/Build_Release/openclaw.js
+          test -s engine/Build_Release/openclaw.data
+          test -s engine/Build_Release/ASSETS.ZIP
+          grep -q '\[COMPAT\] Continuing level after skipping unsupported actor prototypes' engine/OpenClaw/Engine/Util/Converters.cpp
+          grep -q '\[COMPAT\] Invalid rope timing; using 1500 ms fallback' engine/OpenClaw/Engine/Util/Converters.h
+          grep -q '\[CUSTOM\] Stage 2: WWD load failed' engine/OpenClaw/Engine/GameApp/BaseGameLogic.cpp
+          strings engine/Build_Release/openclaw.wasm | grep -q '\[COMPAT\] Continuing level after skipping unsupported actor prototypes'
+          strings engine/Build_Release/openclaw.wasm | grep -q '\[COMPAT\] Invalid rope timing; using 1500 ms fallback'
+          sha256sum engine/Build_Release/openclaw.wasm engine/Build_Release/openclaw.js engine/Build_Release/openclaw.data engine/Build_Release/ASSETS.ZIP > engine/Build_Release/custom-v6-1-sha256.txt
+          cat engine/Build_Release/custom-v6-1-sha256.txt
+
+      - name: Upload v6.1 diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v6-1-diagnostics
+          path: |
+            v6-1-build.log
+            v6-1-build.rc
+            converter-asserts-v6-1.txt
+          retention-days: 3
+
+      - name: Upload v6.1 runtime
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openclaw-custom-runtime-v6-1
+          path: |
+            engine/Build_Release/openclaw.wasm
+            engine/Build_Release/openclaw.js
+            engine/Build_Release/openclaw.data
+            engine/Build_Release/ASSETS.ZIP
+            engine/Build_Release/custom-v6-1-sha256.txt
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Preserve failure state
+        run: |
+          test "$(cat v6-1-build.rc)" = "0"

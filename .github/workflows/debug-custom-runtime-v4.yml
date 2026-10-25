@@ -1,0 +1,73 @@
+name: Debug OpenClaw Custom Runtime v4
+
+on:
+  push:
+    branches: [compat-engine-v3]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  debug-v4:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout exact engine
+        run: |
+          git clone https://github.com/arthurboss/claw-web.git engine
+          git -C engine checkout e723d3d48b5ba2cc723751209954cfc46c82d202
+      - name: Reuse v4 patch script
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          y=Path('.github/workflows/build-custom-runtime-v4.yml').read_text()
+          marker='      - name: Apply compatibility and real custom-level patches\n'
+          part=y.split(marker,1)[1]
+          part=part.split('\n      - name: Install build prerequisites',1)[0]
+          body=part.split('        run: |\n',1)[1]
+          lines=[]
+          for line in body.splitlines():
+              lines.append(line[10:] if line.startswith('          ') else line)
+          Path('/tmp/v4patch.py').write_text('\n'.join(lines)+'\n')
+          PY
+          python3 /tmp/v4patch.py
+      - name: Install build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential ninja-build python3 python3-pip git zip
+          python3 -m pip install --user --break-system-packages 'cmake>=4.3.2'
+          hash -r
+      - name: Install Emscripten
+        run: |
+          git clone --depth=1 https://github.com/emscripten-core/emsdk.git engine/emsdk
+          cd engine/emsdk
+          ./emsdk install latest
+          ./emsdk activate latest
+      - name: Compile and capture complete log
+        shell: bash
+        run: |
+          set +e
+          cd engine
+          source ./emsdk/emsdk_env.sh
+          chmod +x build_wasm.sh patch_sdl2_shaders.sh || true
+          ./build_wasm.sh > ../v4-build.log 2>&1
+          rc=$?
+          echo "$rc" > ../v4-build.rc
+          tail -n 250 ../v4-build.log || true
+          exit 0
+      - name: Upload compiler diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v4-compiler-diagnostics
+          path: |
+            v4-build.log
+            v4-build.rc
+          if-no-files-found: error
+          retention-days: 3
+      - name: Preserve failure state
+        run: |
+          rc=$(cat v4-build.rc)
+          test "$rc" = "0"

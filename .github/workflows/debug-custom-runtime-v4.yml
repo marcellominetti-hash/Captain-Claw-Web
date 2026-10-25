@@ -33,6 +33,21 @@ jobs:
           Path('/tmp/v4patch.py').write_text('\n'.join(lines)+'\n')
           PY
           python3 /tmp/v4patch.py
+      - name: Fix complete ResourceMgr type in game logic
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('engine/OpenClaw/Engine/GameApp/BaseGameLogic.cpp')
+          s=p.read_text(encoding='utf-8')
+          inc='#include "../Resource/ResourceMgr.h"'
+          if inc not in s:
+              anchor='#include "../Resource/Loaders/WwdLoader.h"'
+              if anchor not in s:
+                  raise SystemExit('ResourceMgr include anchor not found')
+              s=s.replace(anchor, anchor+'\n'+inc, 1)
+              p.write_text(s, encoding='utf-8')
+          print('ResourceMgr full definition included')
+          PY
       - name: Install build prerequisites
         run: |
           sudo apt-get update
@@ -57,16 +72,43 @@ jobs:
           echo "$rc" > ../v4-build.rc
           tail -n 250 ../v4-build.log || true
           exit 0
+      - name: Verify and hash runtime
+        if: always()
+        run: |
+          rc=$(cat v4-build.rc)
+          if [ "$rc" = "0" ]; then
+            test -s engine/Build_Release/openclaw.wasm
+            test -s engine/Build_Release/openclaw.js
+            test -s engine/Build_Release/openclaw.data
+            test -s engine/Build_Release/ASSETS.ZIP
+            strings engine/Build_Release/openclaw.wasm | grep -q '\[CUSTOM\] Selected-level resource cache active'
+            strings engine/Build_Release/openclaw.wasm | grep -q '\[CUSTOM\] Direct-start selected level base='
+            sha256sum engine/Build_Release/openclaw.wasm engine/Build_Release/openclaw.js engine/Build_Release/openclaw.data engine/Build_Release/ASSETS.ZIP > engine/Build_Release/custom-v4-fixed-sha256.txt
+            cat engine/Build_Release/custom-v4-fixed-sha256.txt
+          fi
       - name: Upload compiler diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: v4-compiler-diagnostics
+          name: v4-compiler-diagnostics-fixed
           path: |
             v4-build.log
             v4-build.rc
           if-no-files-found: error
           retention-days: 3
+      - name: Upload fixed custom runtime
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openclaw-custom-runtime-v4-fixed
+          path: |
+            engine/Build_Release/openclaw.wasm
+            engine/Build_Release/openclaw.js
+            engine/Build_Release/openclaw.data
+            engine/Build_Release/ASSETS.ZIP
+            engine/Build_Release/custom-v4-fixed-sha256.txt
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Preserve failure state
         run: |
           rc=$(cat v4-build.rc)

@@ -1,0 +1,124 @@
+name: Build OpenClaw Compat Engine v3 MissionFix
+
+on:
+  push:
+    branches: [compat-engine-v3]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-compat-engine-missionfix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout controller repo
+        uses: actions/checkout@v4
+
+      - name: Checkout exact claw-web source
+        run: |
+          git clone https://github.com/arthurboss/claw-web.git engine
+          git -C engine checkout e723d3d48b5ba2cc723751209954cfc46c82d202
+
+      - name: Apply compatibility and Android mission routing patches
+        shell: python
+        run: |
+          from pathlib import Path
+
+          root = Path('engine')
+          conv = root / 'OpenClaw/Engine/Util/Converters.h'
+          actor = root / 'OpenClaw/Engine/Actor/ActorTemplates.cpp'
+          ui = root / 'OpenClaw/Engine/UserInterface/UserInterface.cpp'
+
+          s = actor.read_text(encoding='utf-8')
+          old = '''        auto findIt = s_ImageSetToPickupTypeMap.find(pickupImageSet);\n        if (findIt == s_ImageSetToPickupTypeMap.end())\n        {\n            LOG_ERROR("Could not find requested enum. Offending key: " + pickupImageSet);\n            assert(false);\n        }\n\n        return findIt->second;'''
+          new = '''        auto findIt = s_ImageSetToPickupTypeMap.find(pickupImageSet);\n        if (findIt == s_ImageSetToPickupTypeMap.end())\n        {\n            LOG_WARNING("[COMPAT] Unknown pickup image set: " + pickupImageSet + " - deferring to WWD logic fallback");\n            return PickupType_None;\n        }\n\n        return findIt->second;'''
+          if old not in s:
+              raise SystemExit('ActorTemplates pickup enum patch anchor not found')
+          actor.write_text(s.replace(old, new, 1), encoding='utf-8')
+
+          s = conv.read_text(encoding='utf-8')
+          old = '''inline ElevatorStepDef GetElevatorStepDef(int moveType, int value)\n{\n    assert(moveType >= 1 && moveType <= 9);\n    assert(value > 0);'''
+          new = '''inline ElevatorStepDef GetElevatorStepDef(int moveType, int value)\n{\n    if (moveType < 1 || moveType > 9 || value <= 0)\n    {\n        LOG_WARNING("[COMPAT] Invalid PathElevator step; converting to safe wait step");\n        moveType = 5;\n        value = 60000;\n    }'''
+          if old not in s:
+              raise SystemExit('GetElevatorStepDef patch anchor not found')
+          s = s.replace(old, new, 1)
+
+          old = '''        assert(pathElevatorDef.elevatorPath.size() >= 1);\n\n        Point position(wwdObject->x, wwdObject->y);'''
+          new = '''        if (pathElevatorDef.elevatorPath.empty())\n        {\n            LOG_WARNING("[COMPAT] Empty PathElevator path; converting to stationary platform");\n            pathElevatorDef.elevatorPath.push_back(GetElevatorStepDef(5, 60000));\n        }\n\n        Point position(wwdObject->x, wwdObject->y);'''
+          if old not in s:
+              raise SystemExit('PathElevator empty-path patch anchor not found')
+          s = s.replace(old, new, 1)
+
+          old = '''        SAFE_DELETE(pActorElem);\n\n        ParamMap paramMap;'''
+          new = '''        ParamMap paramMap;'''
+          if old not in s:
+              raise SystemExit('Pickup SAFE_DELETE patch anchor not found')
+          s = s.replace(old, new, 1)
+
+          old = '''        PickupType pickupType = ActorTemplates::StringToEnum_ImageSetToPickupType(wwdObject->imageSet);\n\n        return ActorTemplates::CreateXmlData_PickupActor(pickupType, Point(wwdObject->x, wwdObject->y), true, paramMap);'''
+          new = '''        PickupType pickupType = ActorTemplates::StringToEnum_ImageSetToPickupType(wwdObject->imageSet);\n\n        if (pickupType == PickupType_None)\n        {\n            if (logic == "EndOfLevelPowerup")\n            {\n                LOG_WARNING("[COMPAT] Unknown end-level pickup " + imageSet + " -> Mappiece fallback");\n                pickupType = PickupType_Mappiece;\n            }\n            else if (logic == "BossWarp")\n            {\n                LOG_WARNING("[COMPAT] Unknown boss warp " + imageSet + " -> BossWarp fallback");\n                pickupType = PickupType_BossWarp;\n                paramMap["IsGlitter"] = "false";\n                paramMap["DestinationX"] = ToStr(wwdObject->speedX);\n                paramMap["DestinationY"] = ToStr(wwdObject->speedY);\n            }\n            else if (logic == "HealthPowerup")\n            {\n                LOG_WARNING("[COMPAT] Unknown health pickup " + imageSet + " -> 5 HP fallback");\n                pickupType = PickupType_Health_Breadwater;\n            }\n            else if (logic == "AmmoPowerup")\n            {\n                if (imageSet.find("DYNAMITE") != std::string::npos)\n                    pickupType = PickupType_Ammo_Dynamite;\n                else if (imageSet.find("MAGIC") != std::string::npos)\n                    pickupType = PickupType_Ammo_Magic_5;\n                else\n                    pickupType = PickupType_Ammo_Shot;\n                LOG_WARNING("[COMPAT] Unknown ammo pickup " + imageSet + " -> safe ammo fallback");\n            }\n            else if (logic == "MagicPowerup")\n            {\n                pickupType = PickupType_Ammo_Magic_5;\n                LOG_WARNING("[COMPAT] Unknown magic pickup " + imageSet + " -> magic ammo fallback");\n            }\n            else\n            {\n                LOG_WARNING("[COMPAT] Unsupported pickup visual/logic kept as render-only actor: " + logic + " / " + imageSet);\n                return pActorElem;\n            }\n        }\n\n        SAFE_DELETE(pActorElem);\n        return ActorTemplates::CreateXmlData_PickupActor(pickupType, Point(wwdObject->x, wwdObject->y), true, paramMap);'''
+          if old not in s:
+              raise SystemExit('Pickup conversion patch anchor not found')
+          conv.write_text(s.replace(old, new, 1), encoding='utf-8')
+
+          s = ui.read_text(encoding='utf-8')
+          old = '''void ScreenElementMenu::SwitchPageDelegate(IEventDataPtr pEventData)\n{\n    shared_ptr<EventData_Menu_SwitchPage> pCastEventData = \n        static_pointer_cast<EventData_Menu_SwitchPage>(pEventData);'''
+          new = '''void ScreenElementMenu::SwitchPageDelegate(IEventDataPtr pEventData)\n{\n    shared_ptr<EventData_Menu_SwitchPage> pCastEventData = \n        static_pointer_cast<EventData_Menu_SwitchPage>(pEventData);\n\n#ifdef __EMSCRIPTEN__\n    // Capitan Artiglio Android wrapper: the original OpenClaw custom-level page is unused.\n    // Route only that menu action to our 623-level HTML catalog; canonical campaign pages stay native.\n    if (pCastEventData->GetNewPageName() == "MenuPage_SinglePlayer_LoadCustomLevel")\n    {\n        const int isAndroidWrapper = EM_ASM_INT({\n            return (window.location && window.location.hostname === 'appassets.androidplatform.net') ? 1 : 0;\n        });\n        if (isAndroidWrapper)\n        {\n            LOG_WARNING("[COMPAT] Android custom missions -> levels.html");\n            EM_ASM({\n                try {\n                    const current = new URLSearchParams(window.location.search || '');\n                    const android = (/^[1-9]\\d*$/.test(current.get('android') || '')) ? current.get('android') : '1';\n                    const target = new URL('levels.html', window.location.href);\n                    target.searchParams.set('android', android);\n                    target.searchParams.set('build', '301');\n                    target.searchParams.set('shell', 'v2');\n                    target.searchParams.set('filter', 'all');\n                    window.location.replace(target.toString());\n                } catch (e) {\n                    window.location.href = 'levels.html?android=1&build=301&shell=v2&filter=all';\n                }\n            });\n            return;\n        }\n    }\n#endif'''
+          if old not in s:
+              raise SystemExit('SwitchPageDelegate patch anchor not found')
+          ui.write_text(s.replace(old, new, 1), encoding='utf-8')
+
+          print('Compatibility + Android mission routing patches applied successfully')
+
+      - name: Install build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential ninja-build python3 python3-pip git zip
+          python3 -m pip install --user --break-system-packages 'cmake>=4.3.2'
+          hash -r
+          cmake --version
+
+      - name: Install Emscripten
+        run: |
+          git clone --depth=1 https://github.com/emscripten-core/emsdk.git engine/emsdk
+          cd engine/emsdk
+          ./emsdk install latest
+          ./emsdk activate latest
+
+      - name: Build patched WASM runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd engine
+          source ./emsdk/emsdk_env.sh
+          chmod +x build_wasm.sh patch_sdl2_shaders.sh || true
+          cmake --version
+          ./build_wasm.sh
+
+      - name: Verify missionfix runtime
+        run: |
+          set -euo pipefail
+          test -s engine/Build_Release/openclaw.wasm
+          test -s engine/Build_Release/openclaw.js
+          test -s engine/Build_Release/openclaw.data
+          grep -q '\[COMPAT\] Unknown pickup image set' engine/OpenClaw/Engine/Actor/ActorTemplates.cpp
+          grep -q '\[COMPAT\] Empty PathElevator path' engine/OpenClaw/Engine/Util/Converters.h
+          grep -q '\[COMPAT\] Android custom missions -> levels.html' engine/OpenClaw/Engine/UserInterface/UserInterface.cpp
+          sha256sum engine/Build_Release/openclaw.wasm engine/Build_Release/openclaw.js engine/Build_Release/openclaw.data > engine/Build_Release/compat-sha256.txt
+          cat engine/Build_Release/compat-sha256.txt
+
+      - name: Upload missionfix runtime
+        uses: actions/upload-artifact@v4
+        with:
+          name: openclaw-compat-v3-missionfix
+          path: |
+            engine/Build_Release/openclaw.wasm
+            engine/Build_Release/openclaw.js
+            engine/Build_Release/openclaw.data
+            engine/Build_Release/ASSETS.ZIP
+            engine/Build_Release/compat-sha256.txt
+          if-no-files-found: error
+          retention-days: 7

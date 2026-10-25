@@ -1,0 +1,149 @@
+name: Debug OpenClaw Custom Runtime v6.2 StageFix
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [compat-engine-v3]
+
+permissions:
+  contents: read
+
+jobs:
+  build-v6-2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout exact engine
+        run: |
+          git clone https://github.com/arthurboss/claw-web.git engine
+          git -C engine checkout e723d3d48b5ba2cc723751209954cfc46c82d202
+
+      - name: Apply v4 v5 v6 v6.1 compatibility layers
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def extract(src, step_name, next_step, out):
+              y=Path(src).read_text()
+              marker=f'      - name: {step_name}\n'
+              part=y.split(marker,1)[1].split(f'\n      - name: {next_step}',1)[0]
+              body=part.split('        run: |\n',1)[1]
+              Path(out).write_text('\n'.join(line[10:] if line.startswith('          ') else line for line in body.splitlines())+'\n')
+
+          extract('.github/workflows/build-custom-runtime-v4.yml',
+                  'Apply compatibility and real custom-level patches',
+                  'Install build prerequisites', '/tmp/v4patch.py')
+          extract('.github/workflows/debug-custom-runtime-v5.yml',
+                  'Apply v5 general custom-level compatibility layer',
+                  'Install build prerequisites', '/tmp/v5patch.py')
+          extract('.github/workflows/debug-custom-runtime-v6.yml',
+                  'Apply v6 tolerant fan-level loader',
+                  'Audit remaining converter asserts', '/tmp/v6patch.py')
+          extract('.github/workflows/debug-custom-runtime-v6-1.yml',
+                  'Remove remaining rope timing abort',
+                  'Audit remaining converter asserts', '/tmp/v61patch.py')
+          PY
+          python3 /tmp/v4patch.py
+          python3 /tmp/v5patch.py
+          python3 /tmp/v6patch.py
+          python3 /tmp/v61patch.py
+
+      - name: Add visible loading-stage diagnostics
+        shell: python
+        run: |
+          from pathlib import Path
+          p=Path('engine/OpenClaw/Engine/GameApp/BaseGameLogic.cpp')
+          s=p.read_text(encoding='utf-8')
+
+          old='''    loadingProgress = 2.0f;\n    RenderLoadingScreen(pBackgroundImage, backgroundRect, scale, loadingProgress);\n    WapWwd* pWwd = WwdResourceLoader::LoadAndReturnWwd(xmlLevelResource);'''
+          new='''    loadingProgress = 20.0f;\n    RenderLoadingScreen(pBackgroundImage, backgroundRect, scale, loadingProgress);\n    LOG_WARNING("[STAGEBAR] 20 before WWD load");\n    WapWwd* pWwd = WwdResourceLoader::LoadAndReturnWwd(xmlLevelResource);'''
+          if old not in s:
+              raise SystemExit('20% stage anchor missing')
+          s=s.replace(old,new,1)
+
+          old='''    loadingProgress = 5.0f;\n    RenderLoadingScreen(pBackgroundImage, backgroundRect, scale, loadingProgress);\n    TiXmlElement* pXmlLevelRoot = WwdToXml(pWwd, m_pCurrentLevel->GetLevelNumber());'''
+          new='''    loadingProgress = 40.0f;\n    RenderLoadingScreen(pBackgroundImage, backgroundRect, scale, loadingProgress);\n    LOG_WARNING("[STAGEBAR] 40 WWD parsed");\n    TiXmlElement* pXmlLevelRoot = WwdToXml(pWwd, m_pCurrentLevel->GetLevelNumber());'''
+          if old not in s:
+              raise SystemExit('40% stage anchor missing')
+          s=s.replace(old,new,1)
+
+          old='''    loadingProgress = 8.0f;\n    RenderLoadingScreen(pBackgroundImage, backgroundRect, scale, loadingProgress);\n\n    // Get level palette'''
+          new='''    loadingProgress = 60.0f;\n    RenderLoadingScreen(pBackgroundImage, backgroundRect, scale, loadingProgress);\n    LOG_WARNING("[STAGEBAR] 60 WwdToXml complete");\n\n    // Get level palette'''
+          if old not in s:
+              raise SystemExit('60% stage anchor missing')
+          s=s.replace(old,new,1)
+
+          # The first stock 10% milestone occurs after level properties/tile metadata.
+          old='''    loadingProgress = 10.0f;\n    RenderLoadingScreen(pBackgroundImage, backgroundRect, scale, loadingProgress);'''
+          new='''    loadingProgress = 80.0f;\n    RenderLoadingScreen(pBackgroundImage, backgroundRect, scale, loadingProgress);\n    LOG_WARNING("[STAGEBAR] 80 tile metadata complete; actor loading begins");'''
+          if old not in s:
+              raise SystemExit('80% stage anchor missing')
+          s=s.replace(old,new,1)
+
+          p.write_text(s,encoding='utf-8')
+          print('v6.2 stage diagnostics applied')
+
+      - name: Audit remaining converter aborts
+        run: |
+          grep -nE 'FAIL\(|assert\(' engine/OpenClaw/Engine/Util/Converters.cpp engine/OpenClaw/Engine/Util/Converters.h > converter-aborts-v6-2.txt || true
+          cat converter-aborts-v6-2.txt
+
+      - name: Install build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential ninja-build python3 python3-pip git zip
+          python3 -m pip install --user --break-system-packages 'cmake>=4.3.2'
+          hash -r
+          cmake --version
+
+      - name: Install Emscripten
+        run: |
+          git clone --depth=1 https://github.com/emscripten-core/emsdk.git engine/emsdk
+          cd engine/emsdk
+          ./emsdk install latest
+          ./emsdk activate latest
+
+      - name: Compile v6.2
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd engine
+          source ./emsdk/emsdk_env.sh
+          chmod +x build_wasm.sh patch_sdl2_shaders.sh || true
+          ./build_wasm.sh
+
+      - name: Verify v6.2 runtime
+        run: |
+          set -euo pipefail
+          test -s engine/Build_Release/openclaw.wasm
+          test -s engine/Build_Release/openclaw.js
+          test -s engine/Build_Release/openclaw.data
+          test -s engine/Build_Release/ASSETS.ZIP
+          grep -q '\[COMPAT\] Continuing level after skipping unsupported actor prototypes' engine/OpenClaw/Engine/Util/Converters.cpp
+          grep -q '\[COMPAT\] Invalid rope timing; using 1500 ms fallback' engine/OpenClaw/Engine/Util/Converters.h
+          grep -q '\[STAGEBAR\] 20 before WWD load' engine/OpenClaw/Engine/GameApp/BaseGameLogic.cpp
+          grep -q '\[STAGEBAR\] 40 WWD parsed' engine/OpenClaw/Engine/GameApp/BaseGameLogic.cpp
+          grep -q '\[STAGEBAR\] 60 WwdToXml complete' engine/OpenClaw/Engine/GameApp/BaseGameLogic.cpp
+          grep -q '\[STAGEBAR\] 80 tile metadata complete' engine/OpenClaw/Engine/GameApp/BaseGameLogic.cpp
+          strings engine/Build_Release/openclaw.wasm | grep -q '\[COMPAT\] Continuing level after skipping unsupported actor prototypes'
+          strings engine/Build_Release/openclaw.wasm | grep -q '\[STAGEBAR\] 40 WWD parsed'
+          sha256sum engine/Build_Release/openclaw.wasm engine/Build_Release/openclaw.js engine/Build_Release/openclaw.data engine/Build_Release/ASSETS.ZIP > engine/Build_Release/custom-v6-2-sha256.txt
+          cat engine/Build_Release/custom-v6-2-sha256.txt
+
+      - name: Upload v6.2 runtime
+        uses: actions/upload-artifact@v4
+        with:
+          name: openclaw-custom-runtime-v6-2-stagefix
+          path: |
+            engine/Build_Release/openclaw.wasm
+            engine/Build_Release/openclaw.js
+            engine/Build_Release/openclaw.data
+            engine/Build_Release/ASSETS.ZIP
+            engine/Build_Release/custom-v6-2-sha256.txt
+            converter-aborts-v6-2.txt
+          if-no-files-found: error
+          retention-days: 7

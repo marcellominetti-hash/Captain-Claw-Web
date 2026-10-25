@@ -1,0 +1,226 @@
+name: Debug OpenClaw Custom Runtime v5
+
+on:
+  push:
+    branches: [compat-engine-v3]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  debug-v5:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout exact engine
+        run: |
+          git clone https://github.com/arthurboss/claw-web.git engine
+          git -C engine checkout e723d3d48b5ba2cc723751209954cfc46c82d202
+
+      - name: Reuse v4 compatibility and selected-cache patch
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          y=Path('.github/workflows/build-custom-runtime-v4.yml').read_text()
+          marker='      - name: Apply compatibility and real custom-level patches\n'
+          part=y.split(marker,1)[1]
+          part=part.split('\n      - name: Install build prerequisites',1)[0]
+          body=part.split('        run: |\n',1)[1]
+          lines=[]
+          for line in body.splitlines():
+              lines.append(line[10:] if line.startswith('          ') else line)
+          Path('/tmp/v4patch.py').write_text('\n'.join(lines)+'\n')
+          PY
+          python3 /tmp/v4patch.py
+
+      - name: Apply v5 general custom-level compatibility layer
+        shell: python
+        run: |
+          from pathlib import Path
+
+          root=Path('engine')
+
+          def ensure_include(path, anchor, include):
+              s=path.read_text(encoding='utf-8')
+              if include not in s:
+                  if anchor not in s:
+                      raise SystemExit(f'include anchor missing in {path}: {anchor}')
+                  s=s.replace(anchor, anchor+'\n'+include, 1)
+                  path.write_text(s, encoding='utf-8')
+
+          # V4 calls ResourceMgr directly from game logic, so make the type complete.
+          logic=root/'OpenClaw/Engine/GameApp/BaseGameLogic.cpp'
+          ensure_include(logic, '#include "../Resource/Loaders/WwdLoader.h"', '#include "../Resource/ResourceMgr.h"')
+
+          # Resource discovery must honor selected custom ZIP -> ASSETS.ZIP -> CLAW.REZ,
+          # not enumerate only the legacy CLAW.REZ cache.
+          render=root/'OpenClaw/Engine/Actor/Components/RenderComponent.cpp'
+          ensure_include(render, '#include "../../Resource/Loaders/PidLoader.h"', '#include "../../Resource/ResourceMgr.h"')
+          s=render.read_text(encoding='utf-8')
+          old='g_pApp->GetResourceCache()->GetAllFilesInDirectory(imageDir.c_str())'
+          if old not in s: raise SystemExit('RenderComponent directory lookup anchor missing')
+          s=s.replace(old, 'g_pApp->GetResourceMgr()->VGetAllFilesInDirectory(imageDir.c_str())')
+          render.write_text(s, encoding='utf-8')
+
+          anim=root/'OpenClaw/Engine/Actor/Components/AnimationComponent.cpp'
+          ensure_include(anim, '#include "../../Resource/Loaders/AniLoader.h"', '#include "../../Resource/ResourceMgr.h"')
+          s=anim.read_text(encoding='utf-8')
+          old='g_pApp->GetResourceCache()->Match(animationsPath)'
+          if old not in s: raise SystemExit('AnimationComponent match anchor missing')
+          anim.write_text(s.replace(old, 'g_pApp->GetResourceMgr()->VMatch(animationsPath)'), encoding='utf-8')
+
+          sound=root/'OpenClaw/Engine/Actor/Components/SoundComponent.cpp'
+          ensure_include(sound, '#include "../../Resource/Loaders/WavLoader.h"', '#include "../../Resource/ResourceMgr.h"')
+          s=sound.read_text(encoding='utf-8')
+          old='g_pApp->GetResourceCache()->Match(soundsPath)'
+          if old not in s: raise SystemExit('SoundComponent match anchor missing')
+          sound.write_text(s.replace(old, 'g_pApp->GetResourceMgr()->VMatch(soundsPath)'), encoding='utf-8')
+
+          # Normalize arbitrary fan-level plane names. Stock OpenClaw accepts only
+          # Background/Action/Front and returns false for any other plane name.
+          convcpp=root/'OpenClaw/Engine/Util/Converters.cpp'
+          s=convcpp.read_text(encoding='utf-8')
+          old='''    // Defalt\n    int mainPlaneIdx = -1;\n\n    std::string tileRootDirPath = wapWwd->properties.imageDirectoryPath;'''
+          new='''    // Fan levels routinely add arbitrary plane names. Determine the actual\n    // main plane first, then normalize all other layers by their Z/order so the\n    // renderer can use its three supported render passes safely.\n    int mainPlaneIdx = -1;\n    int mainPlaneCoordZ = 0;\n    for (uint16 scanIdx = 0; scanIdx < wapWwd->properties.numPlanes; ++scanIdx)\n    {\n        if (wapWwd->planes[scanIdx].properties.flags & WAP_PLANE_FLAG_MAIN_PLANE)\n        {\n            mainPlaneIdx = scanIdx;\n            mainPlaneCoordZ = wapWwd->planes[scanIdx].properties.coordZ;\n            break;\n        }\n    }\n    if (mainPlaneIdx == -1)\n    {\n        for (uint16 scanIdx = 0; scanIdx < wapWwd->properties.numPlanes; ++scanIdx)\n        {\n            if (std::string(wapWwd->planes[scanIdx].properties.name) == "Action")\n            {\n                mainPlaneIdx = scanIdx;\n                mainPlaneCoordZ = wapWwd->planes[scanIdx].properties.coordZ;\n                break;\n            }\n        }\n    }\n    if (mainPlaneIdx == -1 && wapWwd->properties.numPlanes > 0)\n    {\n        mainPlaneIdx = 0;\n        for (uint16 scanIdx = 1; scanIdx < wapWwd->properties.numPlanes; ++scanIdx)\n        {\n            if (wapWwd->planes[scanIdx].objectsCount > wapWwd->planes[mainPlaneIdx].objectsCount)\n                mainPlaneIdx = scanIdx;\n        }\n        mainPlaneCoordZ = wapWwd->planes[mainPlaneIdx].properties.coordZ;\n        LOG_WARNING("[CUSTOM] WWD has no explicit main plane; using best candidate index=" + ToStr(mainPlaneIdx));\n    }\n\n    std::string tileRootDirPath = wapWwd->properties.imageDirectoryPath;'''
+          if old not in s: raise SystemExit('Converters.cpp main plane anchor missing')
+          s=s.replace(old,new,1)
+
+          old='''        //---- [Level::Actor::TilePlaneRenderComponent::Images]\n        std::string tileDirName;\n        if (std::string(wwdPlane.properties.name) == "Background") { tileDirName = "BACK"; }\n        else if (std::string(wwdPlane.properties.name) == "Action") { tileDirName = "ACTION"; }\n        else if (std::string(wwdPlane.properties.name) == "Front") { tileDirName = "FRONT"; }\n        else { LOG_ERROR("Unknown tile plane name: " + std::string(wwdPlane.properties.name)); }\n        std::string planeImageDirPath = tileRootDirPath + "/" + tileDirName + "/*";'''
+          new='''        //---- [Level::Actor::TilePlaneRenderComponent::Images]\n        const std::string originalPlaneName = wwdPlane.properties.name;\n        std::string normalizedPlaneName;\n        std::string tileDirName;\n        const bool isMainPlane = (planeIdx == (uint16)mainPlaneIdx) ||\n            ((wwdPlane.properties.flags & WAP_PLANE_FLAG_MAIN_PLANE) != 0);\n        if (isMainPlane)\n        {\n            normalizedPlaneName = "Action";\n            tileDirName = "ACTION";\n        }\n        else if (originalPlaneName == "Background")\n        {\n            normalizedPlaneName = "Background";\n            tileDirName = "BACK";\n        }\n        else if (originalPlaneName == "Front")\n        {\n            normalizedPlaneName = "Front";\n            tileDirName = "FRONT";\n        }\n        else\n        {\n            const bool behind = (wwdPlane.properties.coordZ < mainPlaneCoordZ) ||\n                (wwdPlane.properties.coordZ == mainPlaneCoordZ && planeIdx < (uint16)mainPlaneIdx);\n            normalizedPlaneName = behind ? "Background" : "Front";\n            tileDirName = behind ? "BACK" : "FRONT";\n            LOG_WARNING("[CUSTOM] Normalized plane '" + originalPlaneName + "' -> " + normalizedPlaneName);\n        }\n        std::string planeImageDirPath = tileRootDirPath + "/" + tileDirName + "/*";'''
+          if old not in s: raise SystemExit('Converters.cpp tile plane mapping anchor missing')
+          s=s.replace(old,new,1)
+
+          old='XML_ADD_TEXT_ELEMENT("PlaneName", wwdPlane.properties.name, planeProperties);'
+          if old not in s: raise SystemExit('PlaneName XML anchor missing')
+          s=s.replace(old, 'XML_ADD_TEXT_ELEMENT("PlaneName", normalizedPlaneName.c_str(), planeProperties);', 1)
+
+          # Fan levels sometimes use crate stack heights outside the stock 1..8 range.
+          old='''            if (wwdObject->height == 0)\n            {\n                wwdObject->height = 1;\n            }\n            assert(wwdObject->height > 0 && wwdObject->height <= 8 && "Invalid stacked crate height. Should be between 1 and 8");'''
+          new='''            if (wwdObject->height <= 0) wwdObject->height = 1;\n            if (wwdObject->height > 8)\n            {\n                LOG_WARNING("[COMPAT] Stacked crate height clamped from " + ToStr(wwdObject->height) + " to 8");\n                wwdObject->height = 8;\n            }'''
+          if old not in s: raise SystemExit('stacked crate assertion anchor missing')
+          convcpp.write_text(s.replace(old,new,1), encoding='utf-8')
+
+          convh=root/'OpenClaw/Engine/Util/Converters.h'
+          s=convh.read_text(encoding='utf-8')
+
+          # Invalid ambient areas should skip only the bad decoration, not abort WASM.
+          old='''            if (wwdObject->maxX == 0 && wwdObject->maxY == 0)\n            {\n                assert(wwdObject->hitRect.left != 0);\n                assert(wwdObject->hitRect.right != 0);\n                assert(wwdObject->hitRect.top != 0);\n                assert(wwdObject->hitRect.bottom != 0);\n\n                center.Set('''
+          new='''            if (wwdObject->maxX == 0 && wwdObject->maxY == 0)\n            {\n                if (wwdObject->hitRect.left == 0 || wwdObject->hitRect.right == 0 ||\n                    wwdObject->hitRect.top == 0 || wwdObject->hitRect.bottom == 0)\n                {\n                    LOG_WARNING("[COMPAT] Invalid ambient sound area skipped: " + logic);\n                    SAFE_DELETE(pActorElem);\n                    return NULL;\n                }\n\n                center.Set('''
+          if old not in s: raise SystemExit('ambient hitrect assertion anchor missing')
+          s=s.replace(old,new,1)
+
+          old='''            assert(!center.IsZeroXY());\n            assert(!size.IsZeroXY());\n            \n            if (size.y > size.x)'''
+          new='''            if (center.IsZeroXY() || size.IsZeroXY() || size.x <= 0 || size.y <= 0)\n            {\n                LOG_WARNING("[COMPAT] Empty ambient sound area skipped: " + logic);\n                SAFE_DELETE(pActorElem);\n                return NULL;\n            }\n            \n            if (size.y > size.x)'''
+          if old not in s: raise SystemExit('ambient center assertion anchor missing')
+          s=s.replace(old,new,1)
+
+          old='''        assert(!shootAnim.empty());\n        assert(projectileProto != ActorPrototype_None);'''
+          new='''        if (shootAnim.empty() || projectileProto == ActorPrototype_None)\n        {\n            LOG_WARNING("[COMPAT] Unsupported shooter orientation skipped: " + imageSet);\n            SAFE_DELETE(pActorElem);\n            return NULL;\n        }'''
+          if old not in s: raise SystemExit('shooter assertion anchor missing')
+          s=s.replace(old,new,1)
+
+          old='''        else\n        {\n            LOG("Offending floor spike: " + logic);\n            assert(false && "Unknown floor spike");\n        }'''
+          new='''        else\n        {\n            LOG_WARNING("[COMPAT] Unknown floor spike skipped: " + logic);\n            SAFE_DELETE(pActorElem);\n            return NULL;\n        }'''
+          if old not in s: raise SystemExit('floor spike assertion anchor missing')
+          s=s.replace(old,new,1)
+
+          old='''        else\n        {\n            LOG("Offending SawBlade: " + logic);\n            assert(false && "Unknown floor SawBlade");\n        }'''
+          new='''        else\n        {\n            LOG_WARNING("[COMPAT] Unknown SawBlade skipped: " + logic);\n            SAFE_DELETE(pActorElem);\n            return NULL;\n        }'''
+          if old not in s: raise SystemExit('sawblade assertion anchor missing')
+          s=s.replace(old,new,1)
+
+          # AniCycle is extremely common in fan WWDs; preserve it as animated eye candy.
+          anchor='''    // Static decoration objects with no behavior — just return the render-only XML\n    // This silently handles them without logging an "Unknown logic" warning\n    if (logic == "DoNothing" || logic == "DoNothingNormal" ||'''
+          replacement='''    // Fan-level animation candy. Keep the actor and attach a generic cycle animation.\n    if (logic.find("AniCycle") != std::string::npos)\n    {\n        TiXmlElement* pAnim = EyeCandyToXml(wwdObject);\n        if (pAnim) pActorElem->LinkEndChild(pAnim);\n        return pActorElem;\n    }\n\n    // Static decoration objects with no behavior — just return the render-only XML\n    // This silently handles them without logging an "Unknown logic" warning\n    if (logic == "DoNothing" || logic == "DoNothingNormal" ||'''
+          if anchor not in s: raise SystemExit('AniCycle insertion anchor missing')
+          convh.write_text(s.replace(anchor,replacement,1), encoding='utf-8')
+
+          # Make WWD parse failure explicit rather than dereferencing/aborting later.
+          wwd=root/'OpenClaw/Engine/Resource/Loaders/WwdLoader.cpp'
+          s=wwd.read_text(encoding='utf-8')
+          old='''    if (!extraData)\n    {\n        LOG_ERROR("Could not cast type to WwdResourceExtraData. Check if WwdResourceLoader is registered.");\n        return NULL;\n    }\n\n    return extraData->GetWwd();'''
+          new='''    if (!extraData || !extraData->GetWwd())\n    {\n        LOG_ERROR("[CUSTOM] WWD parse failed or WwdResourceExtraData is missing: " + std::string(resourceString));\n        return NULL;\n    }\n\n    return extraData->GetWwd();'''
+          if old not in s: raise SystemExit('WWD extraData anchor missing')
+          wwd.write_text(s.replace(old,new,1), encoding='utf-8')
+
+          print('v5 custom-level compatibility layer applied')
+
+      - name: Install build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential ninja-build python3 python3-pip git zip
+          python3 -m pip install --user --break-system-packages 'cmake>=4.3.2'
+          hash -r
+
+      - name: Install Emscripten
+        run: |
+          git clone --depth=1 https://github.com/emscripten-core/emsdk.git engine/emsdk
+          cd engine/emsdk
+          ./emsdk install latest
+          ./emsdk activate latest
+
+      - name: Compile v5 and capture complete log
+        shell: bash
+        run: |
+          set +e
+          cd engine
+          source ./emsdk/emsdk_env.sh
+          chmod +x build_wasm.sh patch_sdl2_shaders.sh || true
+          ./build_wasm.sh > ../v5-build.log 2>&1
+          rc=$?
+          echo "$rc" > ../v5-build.rc
+          tail -n 250 ../v5-build.log || true
+          exit 0
+
+      - name: Verify v5 runtime
+        if: always()
+        run: |
+          rc=$(cat v5-build.rc)
+          if [ "$rc" = "0" ]; then
+            test -s engine/Build_Release/openclaw.wasm
+            test -s engine/Build_Release/openclaw.js
+            test -s engine/Build_Release/openclaw.data
+            test -s engine/Build_Release/ASSETS.ZIP
+            grep -q 'Normalized plane' engine/OpenClaw/Engine/Util/Converters.cpp
+            grep -q 'VGetAllFilesInDirectory' engine/OpenClaw/Engine/Actor/Components/RenderComponent.cpp
+            grep -q 'VMatch(animationsPath)' engine/OpenClaw/Engine/Actor/Components/AnimationComponent.cpp
+            grep -q 'VMatch(soundsPath)' engine/OpenClaw/Engine/Actor/Components/SoundComponent.cpp
+            grep -q 'AniCycle' engine/OpenClaw/Engine/Util/Converters.h
+            strings engine/Build_Release/openclaw.wasm | grep -q '\[CUSTOM\] Selected-level resource cache active'
+            strings engine/Build_Release/openclaw.wasm | grep -q '\[CUSTOM\] Normalized plane'
+            sha256sum engine/Build_Release/openclaw.wasm engine/Build_Release/openclaw.js engine/Build_Release/openclaw.data engine/Build_Release/ASSETS.ZIP > engine/Build_Release/custom-v5-sha256.txt
+            cat engine/Build_Release/custom-v5-sha256.txt
+          fi
+
+      - name: Upload v5 compiler diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v5-compiler-diagnostics
+          path: |
+            v5-build.log
+            v5-build.rc
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Upload v5 custom runtime
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openclaw-custom-runtime-v5
+          path: |
+            engine/Build_Release/openclaw.wasm
+            engine/Build_Release/openclaw.js
+            engine/Build_Release/openclaw.data
+            engine/Build_Release/ASSETS.ZIP
+            engine/Build_Release/custom-v5-sha256.txt
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Preserve failure state
+        run: |
+          rc=$(cat v5-build.rc)
+          test "$rc" = "0"

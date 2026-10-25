@@ -1,0 +1,1 @@
+Trigger signer artifact for local APK packaging.

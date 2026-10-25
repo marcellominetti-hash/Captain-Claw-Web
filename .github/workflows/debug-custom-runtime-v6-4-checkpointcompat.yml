@@ -1,0 +1,156 @@
+name: Debug OpenClaw Custom Runtime v6.4 CheckpointCompat
+
+on:
+  push:
+    branches: [compat-engine-v3]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-v6-4:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout exact engine
+        run: |
+          git clone https://github.com/arthurboss/claw-web.git engine
+          git -C engine checkout e723d3d48b5ba2cc723751209954cfc46c82d202
+
+      - name: Apply v4 v5 v6 v6.1 compatibility layers
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def extract(src, step_name, next_step, out):
+              y=Path(src).read_text()
+              marker=f'      - name: {step_name}\n'
+              part=y.split(marker,1)[1].split(f'\n      - name: {next_step}',1)[0]
+              body=part.split('        run: |\n',1)[1]
+              Path(out).write_text('\n'.join(line[10:] if line.startswith('          ') else line for line in body.splitlines())+'\n')
+
+          extract('.github/workflows/build-custom-runtime-v4.yml',
+                  'Apply compatibility and real custom-level patches',
+                  'Install build prerequisites', '/tmp/v4patch.py')
+          extract('.github/workflows/debug-custom-runtime-v5.yml',
+                  'Apply v5 general custom-level compatibility layer',
+                  'Install build prerequisites', '/tmp/v5patch.py')
+          extract('.github/workflows/debug-custom-runtime-v6.yml',
+                  'Apply v6 tolerant fan-level loader',
+                  'Audit remaining converter asserts', '/tmp/v6patch.py')
+          extract('.github/workflows/debug-custom-runtime-v6-1.yml',
+                  'Remove remaining rope timing abort',
+                  'Audit remaining converter asserts', '/tmp/v61patch.py')
+          PY
+          python3 /tmp/v4patch.py
+          python3 /tmp/v5patch.py
+          python3 /tmp/v6patch.py
+          python3 /tmp/v61patch.py
+
+      - name: Add v6.2 loading-stage diagnostics
+        shell: python
+        run: |
+          from pathlib import Path
+          p=Path('engine/OpenClaw/Engine/GameApp/BaseGameLogic.cpp')
+          s=p.read_text(encoding='utf-8')
+          replacements=[
+          ('''    loadingProgress = 2.0f;\n    RenderLoadingScreen(pBackgroundImage, backgroundRect, scale, loadingProgress);\n    WapWwd* pWwd = WwdResourceLoader::LoadAndReturnWwd(xmlLevelResource);''',
+           '''    loadingProgress = 20.0f;\n    RenderLoadingScreen(pBackgroundImage, backgroundRect, scale, loadingProgress);\n    LOG_WARNING("[STAGEBAR] 20 before WWD load");\n    WapWwd* pWwd = WwdResourceLoader::LoadAndReturnWwd(xmlLevelResource);'''),
+          ('''    loadingProgress = 5.0f;\n    RenderLoadingScreen(pBackgroundImage, backgroundRect, scale, loadingProgress);\n    TiXmlElement* pXmlLevelRoot = WwdToXml(pWwd, m_pCurrentLevel->GetLevelNumber());''',
+           '''    loadingProgress = 40.0f;\n    RenderLoadingScreen(pBackgroundImage, backgroundRect, scale, loadingProgress);\n    LOG_WARNING("[STAGEBAR] 40 WWD parsed");\n    TiXmlElement* pXmlLevelRoot = WwdToXml(pWwd, m_pCurrentLevel->GetLevelNumber());'''),
+          ('''    loadingProgress = 8.0f;\n    RenderLoadingScreen(pBackgroundImage, backgroundRect, scale, loadingProgress);\n\n    // Get level palette''',
+           '''    loadingProgress = 60.0f;\n    RenderLoadingScreen(pBackgroundImage, backgroundRect, scale, loadingProgress);\n    LOG_WARNING("[STAGEBAR] 60 WwdToXml complete");\n\n    // Get level palette'''),
+          ('''    loadingProgress = 10.0f;\n    RenderLoadingScreen(pBackgroundImage, backgroundRect, scale, loadingProgress);''',
+           '''    loadingProgress = 80.0f;\n    RenderLoadingScreen(pBackgroundImage, backgroundRect, scale, loadingProgress);\n    LOG_WARNING("[STAGEBAR] 80 tile metadata complete; actor loading begins");''')]
+          for old,new in replacements:
+              if old not in s:
+                  raise SystemExit('stage diagnostic anchor missing')
+              s=s.replace(old,new,1)
+          p.write_text(s,encoding='utf-8')
+
+      - name: Make duplicate actor components tolerant
+        shell: python
+        run: |
+          from pathlib import Path
+          p=Path('engine/OpenClaw/Engine/Actor/Actor.cpp')
+          s=p.read_text(encoding='utf-8')
+          inc='#include "../SharedDefines.h"\n#include "Actor.h"'
+          repl='#include "../SharedDefines.h"\n#include "../Logger/Logger.h"\n#include "Actor.h"'
+          if inc not in s:
+              raise SystemExit('Actor.cpp include anchor missing')
+          s=s.replace(inc,repl,1)
+          old='''void Actor::AddComponent(StrongActorComponentPtr component)\n{\n    std::pair<ActorComponentsMap::iterator, bool> success =\n        _components.insert(std::make_pair(component->VGetId(), component));\n\n    assert(success.second);\n}\n'''
+          new='''void Actor::AddComponent(StrongActorComponentPtr component)\n{\n    if (!component)\n    {\n        LOG_WARNING("[DUPCOMPAT] Null component ignored for actor=" + _name + " guid=" + std::to_string(_GUID));\n        return;\n    }\n\n    const uint32 componentId = component->VGetId();\n    ActorComponentsMap::iterator existing = _components.find(componentId);\n    if (existing != _components.end())\n    {\n        const char* existingName = (existing->second ? existing->second->VGetName() : "(null)");\n        const char* incomingName = component->VGetName();\n        LOG_WARNING("[DUPCOMPAT] Duplicate component skipped actor=" + _name +\n            " guid=" + std::to_string(_GUID) +\n            " existing=" + std::string(existingName ? existingName : "(null)") +\n            " incoming=" + std::string(incomingName ? incomingName : "(null)") +\n            " id=" + std::to_string(componentId));\n        return;\n    }\n\n    _components.insert(std::make_pair(componentId, component));\n}\n'''
+          if old not in s:
+              raise SystemExit('Actor::AddComponent anchor missing')
+          p.write_text(s.replace(old,new,1),encoding='utf-8')
+
+      - name: Make custom checkpoint and spawn tolerant
+        shell: python
+        run: |
+          from pathlib import Path
+          p=Path('engine/OpenClaw/Engine/GameApp/BaseGameLogic.cpp')
+          s=p.read_text(encoding='utf-8')
+          old='''    // Load game save data\n    const CheckpointSave* pCheckpointSave = m_pGameSaveMgr->GetCheckpointSave(\n        m_pCurrentLevel->m_LeveNumber, m_pCurrentLevel->m_LoadedCheckpoint);\n    assert(pCheckpointSave != NULL);\n\n    loadingProgress = 95.0f;\n    RenderLoadingScreen(pBackgroundImage, backgroundRect, scale, loadingProgress);\n\n    // Load claw stats: Score, Health, Lives, Ammo: Bullets, Magic, Dynamite\n    IEventMgr* pEventMgr = IEventMgr::Get();\n    pEventMgr->VQueueEvent(IEventDataPtr(new EventData_Modify_Player_Stat(clawId, PlayerStat_Score, pCheckpointSave->score, false)));\n    pEventMgr->VQueueEvent(IEventDataPtr(new EventData_Modify_Player_Stat(clawId, PlayerStat_Health, pCheckpointSave->health, false)));\n    pEventMgr->VQueueEvent(IEventDataPtr(new EventData_Modify_Player_Stat(clawId, PlayerStat_Lives, pCheckpointSave->lives, false)));\n    pEventMgr->VQueueEvent(IEventDataPtr(new EventData_Modify_Player_Stat(clawId, PlayerStat_Bullets, pCheckpointSave->bulletCount, false)));\n    pEventMgr->VQueueEvent(IEventDataPtr(new EventData_Modify_Player_Stat(clawId, PlayerStat_Magic, pCheckpointSave->magicCount, false)));\n    pEventMgr->VQueueEvent(IEventDataPtr(new EventData_Modify_Player_Stat(clawId, PlayerStat_Dynamite, pCheckpointSave->dynamiteCount, false)));\n\n    // Set claw to spawn location\n    m_CurrentSpawnPosition = GetSpawnPosition(m_pCurrentLevel->m_LeveNumber, m_pCurrentLevel->m_LoadedCheckpoint);\n    pEventMgr->VTriggerEvent(IEventDataPtr(new EventData_Teleport_Actor(clawId, m_CurrentSpawnPosition)));'''
+          new='''    // Load game save data. Fan levels are standalone and must not depend on campaign progression.\n    bool customLevelActive = false;\n#ifdef __EMSCRIPTEN__\n    {\n        std::ifstream customMarker("/CUSTOM_LEVEL.NUM");\n        int customMarkerValue = 0;\n        customLevelActive = customMarker.good() && (customMarker >> customMarkerValue) && customMarkerValue >= 1;\n    }\n#endif\n\n    CheckpointSave fallbackCheckpoint;\n    const CheckpointSave* pCheckpointSave = m_pGameSaveMgr->GetCheckpointSave(\n        m_pCurrentLevel->m_LeveNumber, m_pCurrentLevel->m_LoadedCheckpoint);\n    if (pCheckpointSave == NULL && customLevelActive)\n    {\n        fallbackCheckpoint.checkpointIdx = 0;\n        fallbackCheckpoint.score = 0;\n        fallbackCheckpoint.health = 100;\n        fallbackCheckpoint.lives = 6;\n        fallbackCheckpoint.bulletCount = 15;\n        fallbackCheckpoint.magicCount = 5;\n        fallbackCheckpoint.dynamiteCount = 5;\n        pCheckpointSave = &fallbackCheckpoint;\n        LOG_WARNING("[CHECKPOINTCOMPAT] Missing campaign save for custom level; using standalone checkpoint 0");\n    }\n    if (pCheckpointSave == NULL)\n    {\n        LOG_ERROR("Missing checkpoint save for level=" + ToStr(m_pCurrentLevel->m_LeveNumber) +\n            " checkpoint=" + ToStr(m_pCurrentLevel->m_LoadedCheckpoint));\n        return false;\n    }\n\n    if (clawId == (uint32)-1)\n    {\n        LOG_ERROR("[CHECKPOINTCOMPAT] No Claw actor was created for this level");\n        return false;\n    }\n\n    loadingProgress = 95.0f;\n    RenderLoadingScreen(pBackgroundImage, backgroundRect, scale, loadingProgress);\n\n    // Load claw stats: Score, Health, Lives, Ammo: Bullets, Magic, Dynamite\n    IEventMgr* pEventMgr = IEventMgr::Get();\n    pEventMgr->VQueueEvent(IEventDataPtr(new EventData_Modify_Player_Stat(clawId, PlayerStat_Score, pCheckpointSave->score, false)));\n    pEventMgr->VQueueEvent(IEventDataPtr(new EventData_Modify_Player_Stat(clawId, PlayerStat_Health, pCheckpointSave->health, false)));\n    pEventMgr->VQueueEvent(IEventDataPtr(new EventData_Modify_Player_Stat(clawId, PlayerStat_Lives, pCheckpointSave->lives, false)));\n    pEventMgr->VQueueEvent(IEventDataPtr(new EventData_Modify_Player_Stat(clawId, PlayerStat_Bullets, pCheckpointSave->bulletCount, false)));\n    pEventMgr->VQueueEvent(IEventDataPtr(new EventData_Modify_Player_Stat(clawId, PlayerStat_Magic, pCheckpointSave->magicCount, false)));\n    pEventMgr->VQueueEvent(IEventDataPtr(new EventData_Modify_Player_Stat(clawId, PlayerStat_Dynamite, pCheckpointSave->dynamiteCount, false)));\n\n    // Campaign levels use canonical checkpoint metadata. Fan levels keep the Claw position from their WWD.\n    if (customLevelActive)\n    {\n        auto clawIter = m_ActorMap.find(clawId);\n        if (clawIter != m_ActorMap.end() && clawIter->second && clawIter->second->GetPositionComponent())\n        {\n            m_CurrentSpawnPosition = clawIter->second->GetPositionComponent()->GetPosition();\n            LOG_WARNING("[CHECKPOINTCOMPAT] Custom WWD spawn retained x=" + ToStr(m_CurrentSpawnPosition.x) +\n                " y=" + ToStr(m_CurrentSpawnPosition.y));\n        }\n        else\n        {\n            LOG_WARNING("[CHECKPOINTCOMPAT] Claw position unavailable; falling back to canonical checkpoint spawn");\n            m_CurrentSpawnPosition = GetSpawnPosition(m_pCurrentLevel->m_LeveNumber, 0);\n            pEventMgr->VTriggerEvent(IEventDataPtr(new EventData_Teleport_Actor(clawId, m_CurrentSpawnPosition)));\n        }\n    }\n    else\n    {\n        m_CurrentSpawnPosition = GetSpawnPosition(m_pCurrentLevel->m_LeveNumber, m_pCurrentLevel->m_LoadedCheckpoint);\n        pEventMgr->VTriggerEvent(IEventDataPtr(new EventData_Teleport_Actor(clawId, m_CurrentSpawnPosition)));\n    }'''
+          if old not in s:
+              raise SystemExit('checkpoint/spawn anchor missing')
+          p.write_text(s.replace(old,new,1),encoding='utf-8')
+          print('v6.4 checkpoint/spawn compatibility applied')
+
+      - name: Install build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential ninja-build python3 python3-pip git zip
+          python3 -m pip install --user --break-system-packages 'cmake>=4.3.2'
+          hash -r
+          cmake --version
+
+      - name: Install Emscripten
+        run: |
+          git clone --depth=1 https://github.com/emscripten-core/emsdk.git engine/emsdk
+          cd engine/emsdk
+          ./emsdk install latest
+          ./emsdk activate latest
+
+      - name: Compile v6.4
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd engine
+          source ./emsdk/emsdk_env.sh
+          chmod +x build_wasm.sh patch_sdl2_shaders.sh || true
+          ./build_wasm.sh
+
+      - name: Verify v6.4 runtime
+        run: |
+          set -euo pipefail
+          test -s engine/Build_Release/openclaw.wasm
+          test -s engine/Build_Release/openclaw.js
+          test -s engine/Build_Release/openclaw.data
+          test -s engine/Build_Release/ASSETS.ZIP
+          grep -q '\[CHECKPOINTCOMPAT\] Missing campaign save for custom level' engine/OpenClaw/Engine/GameApp/BaseGameLogic.cpp
+          grep -q '\[CHECKPOINTCOMPAT\] Custom WWD spawn retained' engine/OpenClaw/Engine/GameApp/BaseGameLogic.cpp
+          grep -q '\[DUPCOMPAT\] Duplicate component skipped' engine/OpenClaw/Engine/Actor/Actor.cpp
+          strings engine/Build_Release/openclaw.wasm | grep -q '\[CHECKPOINTCOMPAT\] Missing campaign save for custom level'
+          strings engine/Build_Release/openclaw.wasm | grep -q '\[CHECKPOINTCOMPAT\] Custom WWD spawn retained'
+          sha256sum engine/Build_Release/openclaw.wasm engine/Build_Release/openclaw.js engine/Build_Release/openclaw.data engine/Build_Release/ASSETS.ZIP > engine/Build_Release/custom-v6-4-sha256.txt
+          cat engine/Build_Release/custom-v6-4-sha256.txt
+
+      - name: Upload v6.4 runtime
+        uses: actions/upload-artifact@v4
+        with:
+          name: openclaw-custom-runtime-v6-4-checkpointcompat
+          path: |
+            engine/Build_Release/openclaw.wasm
+            engine/Build_Release/openclaw.js
+            engine/Build_Release/openclaw.data
+            engine/Build_Release/ASSETS.ZIP
+            engine/Build_Release/custom-v6-4-sha256.txt
+          if-no-files-found: error
+          retention-days: 7

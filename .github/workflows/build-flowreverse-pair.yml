@@ -1,0 +1,87 @@
+name: Build FlowReverse Pair
+
+on:
+  push:
+    branches:
+      - flowcast-probe-build
+    paths:
+      - 'flowreverse_phone/**'
+      - 'flowreceiver_tv/**'
+      - '.github/workflows/build-flowreverse-pair.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Flutter SDK 3.47.7
+        shell: bash
+        run: |
+          set -euxo pipefail
+          FLUTTER_URL='https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_3.47.7-stable.tar.xz'
+          FLUTTER_SHA='af7455f540df951184c7953fbe3cf884766e7541dacf8571f9f582db03dd6230'
+          curl --retry 4 --retry-all-errors -L "$FLUTTER_URL" -o "$RUNNER_TEMP/flutter.tar.xz"
+          echo "$FLUTTER_SHA  $RUNNER_TEMP/flutter.tar.xz" | sha256sum -c -
+          tar -xf "$RUNNER_TEMP/flutter.tar.xz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/flutter/bin/flutter" config --no-analytics
+
+      - name: Create phone project
+        run: |
+          rm -rf .phone_build
+          flutter create --platforms=android --org com.flowreverse --project-name flowreverse_phone .phone_build
+          cp flowreverse_phone/pubspec.yaml .phone_build/pubspec.yaml
+          cp flowreverse_phone/main.dart .phone_build/lib/main.dart
+          cp flowreverse_phone/AndroidManifest.xml .phone_build/android/app/src/main/AndroidManifest.xml
+          rm -rf .phone_build/test
+
+      - name: Build phone APK
+        working-directory: .phone_build
+        run: |
+          flutter pub get
+          flutter analyze
+          flutter build apk --release
+
+      - name: Create TV project
+        run: |
+          rm -rf .tv_build
+          flutter create --platforms=android --org com.flowreceiver --project-name flowreceiver_tv .tv_build
+          cp flowreceiver_tv/pubspec.yaml .tv_build/pubspec.yaml
+          cp flowreceiver_tv/main.dart .tv_build/lib/main.dart
+          cp flowreceiver_tv/AndroidManifest.xml .tv_build/android/app/src/main/AndroidManifest.xml
+          cp flowreceiver_tv/MainActivity.kt .tv_build/android/app/src/main/kotlin/com/flowreceiver/flowreceiver_tv/MainActivity.kt
+          rm -rf .tv_build/test
+
+      - name: Build TV APK
+        working-directory: .tv_build
+        run: |
+          flutter pub get
+          flutter analyze
+          flutter build apk --release
+
+      - name: Stage APKs
+        run: |
+          cp .phone_build/build/app/outputs/flutter-apk/app-release.apk FlowReverse-Phone-v0.1.apk
+          cp .tv_build/build/app/outputs/flutter-apk/app-release.apk FlowReceiver-TV-v0.1.apk
+          sha256sum FlowReverse-Phone-v0.1.apk FlowReceiver-TV-v0.1.apk | tee FlowReverse-pair.sha256
+
+      - name: Upload pair
+        uses: actions/upload-artifact@v4
+        with:
+          name: FlowReverse-Pair-v0.1
+          path: |
+            FlowReverse-Phone-v0.1.apk
+            FlowReceiver-TV-v0.1.apk
+            FlowReverse-pair.sha256
+          if-no-files-found: error
+          retention-days: 14

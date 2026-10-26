@@ -163,7 +163,8 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
 
-        RemoteMediaClient client = session.getRemoteMediaClient();
+        final CastSession activeSession = session;
+        RemoteMediaClient client = activeSession.getRemoteMediaClient();
         if (client == null) {
             log("LOAD ABORTED: RemoteMediaClient unavailable");
             return;
@@ -184,14 +185,14 @@ public class MainActivity extends AppCompatActivity {
                 .build();
 
         log("LOAD → " + title + " • " + contentType);
-        setStatus("Sending media to " + safeDeviceName(session));
+        setStatus("Sending media to " + safeDeviceName(activeSession));
 
         client.load(request).setResultCallback(result -> {
             int code = result.getStatus().getStatusCode();
             boolean ok = result.getStatus().isSuccess();
             log("LOAD RESULT: success=" + ok + " • status=" + code);
             if (ok) {
-                setStatus("Playing on " + safeDeviceName(session));
+                setStatus("Playing on " + safeDeviceName(activeSession));
             } else {
                 setStatus("Media load failed • status " + code);
             }

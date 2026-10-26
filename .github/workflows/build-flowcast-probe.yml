@@ -66,15 +66,15 @@ jobs:
 
       - name: Stage APK
         run: |
-          cp .flowcast_build/build/app/outputs/flutter-apk/app-release.apk FlowCast-Probe-v0.2.2.apk
-          sha256sum FlowCast-Probe-v0.2.2.apk | tee FlowCast-Probe-v0.2.2.sha256
+          cp .flowcast_build/build/app/outputs/flutter-apk/app-release.apk FlowCast-Probe-v0.2.3.apk
+          sha256sum FlowCast-Probe-v0.2.3.apk | tee FlowCast-Probe-v0.2.3.sha256
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: FlowCast-Probe-v0.2.2
+          name: FlowCast-Probe-v0.2.3
           path: |
-            FlowCast-Probe-v0.2.2.apk
-            FlowCast-Probe-v0.2.2.sha256
+            FlowCast-Probe-v0.2.3.apk
+            FlowCast-Probe-v0.2.3.sha256
           if-no-files-found: error
           retention-days: 14

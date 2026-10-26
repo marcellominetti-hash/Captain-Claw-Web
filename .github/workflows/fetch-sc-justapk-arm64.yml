@@ -1,0 +1,62 @@
+name: Fetch StreamingCommunity via justapk
+on:
+  push:
+    branches: [flowcast-probe-build]
+    paths:
+      - '.github/workflows/fetch-sc-justapk-arm64.yml'
+  workflow_dispatch:
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install justapk
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install 'git+https://github.com/TheQmaks/justapk.git'
+          justapk sources | tee sources.json
+
+      - name: Query and download 3.1.0
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p sc-source
+          justapk info com.devshifters.streamingcommunity -s uptodown | tee info.json || true
+          justapk download com.devshifters.streamingcommunity -s uptodown -v 3.1.0 -o sc-source --no-convert | tee download.json || \
+          justapk download com.devshifters.streamingcommunity -s uptodown -o sc-source --no-convert | tee download.json
+          find sc-source -type f -printf '%P %s\n' | sort | tee listing.txt
+          python - <<'PY'
+          import pathlib,zipfile,json,hashlib
+          root=pathlib.Path('sc-source')
+          report=[]
+          for p in root.rglob('*'):
+              if not p.is_file(): continue
+              d={'file':str(p),'size':p.stat().st_size,'sha256':hashlib.sha256(p.read_bytes()).hexdigest(),'zip':zipfile.is_zipfile(p)}
+              if zipfile.is_zipfile(p):
+                  with zipfile.ZipFile(p) as z:
+                      n=z.namelist()
+                      d['arm64']=[x for x in n if 'arm64' in x.lower() or 'arm64-v8a' in x.lower()][:200]
+                      d['v7']=[x for x in n if 'armeabi_v7a' in x.lower() or 'armeabi-v7a' in x.lower()][:50]
+                      d['apks']=[x for x in n if x.lower().endswith('.apk')][:100]
+                      d['manifest_json']=[x for x in n if x.lower().endswith('manifest.json')][:10]
+              report.append(d)
+          pathlib.Path('inspection.json').write_text(json.dumps(report,indent=2))
+          print(json.dumps(report,indent=2))
+          PY
+
+      - name: Upload original package
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: streamingcommunity-justapk-3.1.0
+          path: |
+            sc-source
+            info.json
+            download.json
+            listing.txt
+            inspection.json
+            sources.json
+          if-no-files-found: warn
+          retention-days: 7

@@ -1,0 +1,37 @@
+name: Inspect Uptodown download JS
+on:
+  push:
+    branches: [flowcast-probe-build]
+    paths:
+      - '.github/workflows/inspect-uptodown-download-js.yml'
+  workflow_dispatch:
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch download JavaScript and extract endpoints
+        shell: bash
+        run: |
+          set -euxo pipefail
+          curl -fL -A 'Mozilla/5.0' 'https://stc.utdstc.com/1793025793202/download.js' -o download.js
+          wc -c download.js
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          s=Path('download.js').read_text(errors='ignore')
+          keys=['downloadURL','downloadUrl','file-id','fileId','app-id','appId','turnstile','fetch(','XMLHttpRequest','/download','dw.uptodown','api/','eapi','fileID','download-version']
+          for k in keys:
+              print('\n===',k,'===')
+              for m in list(re.finditer(re.escape(k),s,re.I))[:30]:
+                  print(s[max(0,m.start()-400):min(len(s),m.start()+900)].replace('\n',' ')[:1300])
+          urls=sorted(set(re.findall(r'https?://[^"\'`\\\s]+',s)))
+          print('\n=== URLS ===')
+          for u in urls: print(u)
+          PY
+      - name: Upload JS
+        uses: actions/upload-artifact@v4
+        with:
+          name: uptodown-download-js
+          path: download.js
+          retention-days: 3

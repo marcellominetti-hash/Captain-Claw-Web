@@ -1,0 +1,95 @@
+name: Fetch StreamingCommunity Uptodown public
+on:
+  push:
+    branches: [flowcast-probe-build]
+    paths:
+      - '.github/workflows/fetch-sc-uptodown-public.yml'
+  workflow_dispatch:
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve public download page
+        shell: bash
+        run: |
+          set -euxo pipefail
+          UA='Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 Chrome/130 Mobile Safari/537.36'
+          BASE='https://streaming-community.en.uptodown.com/android'
+          for URL in "$BASE/download" "$BASE/download/3.1.0" "$BASE/download/101"; do
+            SAFE=$(echo "$URL" | tr '/:.' '_')
+            curl -L --retry 2 -A "$UA" -c cookies.txt -b cookies.txt -e "$BASE" "$URL" -o "page-${SAFE}.html" || true
+          done
+          python - <<'PY'
+          from pathlib import Path
+          import re, html, json
+          hits=[]
+          for p in Path('.').glob('page-*.html'):
+              s=p.read_text(errors='ignore')
+              print('PAGE',p,'SIZE',len(s))
+              patterns=[
+                r'https?://dw\.uptodown\.com/[^"\'<>\\\s]+',
+                r'https?://[^"\'<>\\\s]+\.xapk(?:\?[^"\'<>\\\s]*)?',
+                r'https?://[^"\'<>\\\s]+\.apk(?:\?[^"\'<>\\\s]*)?',
+                r'"downloadURL"\s*:\s*"([^"]+)"',
+                r'"url"\s*:\s*"(https:[^"]+)"'
+              ]
+              for pat in patterns:
+                  for m in re.findall(pat,s,re.I):
+                      u=m if isinstance(m,str) else m[0]
+                      u=html.unescape(u).replace('\\u002F','/').replace('\\/','/')
+                      if 'uptodown' in u or '.xapk' in u.lower() or '.apk' in u.lower():
+                          hits.append({'page':str(p),'url':u})
+          uniq=[]; seen=set()
+          for h in hits:
+              if h['url'] not in seen:
+                  seen.add(h['url']); uniq.append(h)
+          Path('candidates.json').write_text(json.dumps(uniq,indent=2))
+          print(json.dumps(uniq[:100],indent=2))
+          direct=next((h['url'] for h in uniq if 'dw.uptodown.com' in h['url']),None)
+          if not direct:
+              direct=next((h['url'] for h in uniq if '.xapk' in h['url'].lower()),None)
+          if not direct:
+              raise SystemExit('No direct CDN URL found')
+          Path('download-url.txt').write_text(direct)
+          print('SELECTED',direct)
+          PY
+
+      - name: Download and inspect XAPK
+        shell: bash
+        run: |
+          set -euxo pipefail
+          URL=$(cat download-url.txt)
+          UA='Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 Chrome/130 Mobile Safari/537.36'
+          curl -fL --retry 3 --retry-delay 2 -A "$UA" "$URL" -o streamingcommunity-uptodown.xapk
+          ls -lh streamingcommunity-uptodown.xapk
+          sha256sum streamingcommunity-uptodown.xapk | tee sha256.txt
+          python - <<'PY'
+          import zipfile, json, pathlib
+          p='streamingcommunity-uptodown.xapk'
+          if not zipfile.is_zipfile(p): raise SystemExit('Downloaded payload not zip')
+          with zipfile.ZipFile(p) as z:
+              n=z.namelist()
+              arm64=[x for x in n if 'arm64' in x.lower() or 'arm64-v8a' in x.lower()]
+              v7=[x for x in n if 'armeabi' in x.lower()]
+              report={'count':len(n),'arm64':arm64,'v7':v7,'apks':[x for x in n if x.endswith('.apk')][:200]}
+              pathlib.Path('listing.txt').write_text('\n'.join(n))
+              pathlib.Path('inspection.json').write_text(json.dumps(report,indent=2))
+              print(json.dumps(report,indent=2))
+          PY
+
+      - name: Upload package
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: streamingcommunity-uptodown-public
+          path: |
+            streamingcommunity-uptodown.xapk
+            page-*.html
+            candidates.json
+            download-url.txt
+            listing.txt
+            inspection.json
+            sha256.txt
+          if-no-files-found: warn
+          retention-days: 7

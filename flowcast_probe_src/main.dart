@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:dart_cast/dart_cast.dart';
 import 'package:flutter/material.dart';
@@ -53,6 +54,7 @@ class _ProbePageState extends State<ProbePage> {
   CastDevice? _selectedDevice;
   bool _scanning = false;
   bool _connecting = false;
+  bool _probing = false;
   int _reconnectAttempt = 0;
 
   bool get _isConnected => _session != null;
@@ -71,7 +73,7 @@ class _ProbePageState extends State<ProbePage> {
         return ChromecastSession(device: device);
       },
     );
-    _addLog('Ready. Put phone and Mi Box on the same Wi-Fi, then press Scan.');
+    _addLog('Ready. Put phone and Mi Box on the same network, then press Scan.');
   }
 
   void _addLog(String message) {
@@ -128,6 +130,55 @@ class _ProbePageState extends State<ProbePage> {
     }
   }
 
+  Future<bool> _probeTcp(CastDevice device, int port) async {
+    final Stopwatch sw = Stopwatch()..start();
+    Socket? socket;
+    try {
+      socket = await Socket.connect(
+        device.address,
+        port,
+        timeout: const Duration(seconds: 3),
+      );
+      sw.stop();
+      _addLog('TCP $port OPEN (${sw.elapsedMilliseconds} ms).');
+      return true;
+    } on SocketException catch (error) {
+      sw.stop();
+      _addLog('TCP $port FAILED (${sw.elapsedMilliseconds} ms): ${error.message}.');
+      return false;
+    } catch (error) {
+      sw.stop();
+      _addLog('TCP $port ERROR (${sw.elapsedMilliseconds} ms): $error');
+      return false;
+    } finally {
+      socket?.destroy();
+    }
+  }
+
+  Future<bool> _runNetworkPreflight(CastDevice device) async {
+    if (_probing) return false;
+    setState(() => _probing = true);
+    _addLog('Network preflight for ${device.name} (${device.address.address})...');
+
+    try {
+      final bool port8008 = await _probeTcp(device, 8008);
+      final bool port8009 = await _probeTcp(device, 8009);
+
+      if (port8008 && port8009) {
+        _addLog('PREFLIGHT: 8008 + 8009 reachable. Proceeding to Cast TLS handshake.');
+      } else if (port8008 && !port8009) {
+        _addLog('PREFLIGHT: device HTTP is reachable but CastV2 :8009 is not. Receiver service may be stuck.');
+      } else if (!port8008 && !port8009) {
+        _addLog('PREFLIGHT: mDNS found the box but unicast TCP cannot reach it. Suspect hotspot/AP isolation or routing.');
+      } else {
+        _addLog('PREFLIGHT: :8009 reachable while :8008 is closed. Cast may still work; continuing.');
+      }
+      return port8009;
+    } finally {
+      if (mounted) setState(() => _probing = false);
+    }
+  }
+
   Future<void> _attachSession(CastDevice device, CastSession session) async {
     await _stateSubscription?.cancel();
     _session = session;
@@ -150,7 +201,11 @@ class _ProbePageState extends State<ProbePage> {
     if (mounted) setState(() {});
   }
 
-  Future<void> _connect(CastDevice device, {bool automatic = false}) async {
+  Future<void> _connect(
+    CastDevice device, {
+    bool automatic = false,
+    bool skipPreflight = false,
+  }) async {
     if (_connecting) return;
     setState(() {
       _connecting = true;
@@ -164,6 +219,14 @@ class _ProbePageState extends State<ProbePage> {
     );
 
     try {
+      if (!skipPreflight) {
+        final bool castPortOpen = await _runNetworkPreflight(device);
+        if (!castPortOpen) {
+          _addLog('CAST CONNECT SKIPPED: TCP :8009 is unreachable right now.');
+          return;
+        }
+      }
+
       final CastSession session = await _service.connect(device);
       await _attachSession(device, session);
       _addLog(automatic ? 'Auto-reconnect succeeded.' : 'Connected to ${device.name}.');
@@ -180,7 +243,7 @@ class _ProbePageState extends State<ProbePage> {
   void _scheduleAutoReconnect(CastDevice device) {
     if (!mounted || _session != null) return;
     if (_reconnectAttempt >= 3) {
-      _addLog('Auto-reconnect stopped after 3 attempts. Tap Reconnect or a media test.');
+      _addLog('Auto-reconnect stopped after 3 attempts. Tap Reconnect or Network test.');
       return;
     }
 
@@ -275,7 +338,7 @@ class _ProbePageState extends State<ProbePage> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('FlowCast Probe v0.2.2'),
+        title: const Text('FlowCast Probe v0.2.3'),
         actions: <Widget>[
           IconButton(
             tooltip: 'Clear log',
@@ -299,7 +362,7 @@ class _ProbePageState extends State<ProbePage> {
               subtitle: Text(
                 selected == null
                     ? 'Search for Chromecast / Chromecast built-in'
-                    : '${selected.address}:${selected.port}${connected ? '' : ' • auto-reconnect enabled'}',
+                    : '${selected.address}:${selected.port}${connected ? '' : ' • diagnostics ready'}',
               ),
               trailing: selected == null
                   ? FilledButton.icon(
@@ -313,8 +376,8 @@ class _ProbePageState extends State<ProbePage> {
                           child: const Text('Disconnect'),
                         )
                       : FilledButton(
-                          onPressed: _connecting ? null : () => _connect(selected),
-                          child: Text(_connecting ? 'Connecting…' : 'Reconnect'),
+                          onPressed: (_connecting || _probing) ? null : () => _connect(selected),
+                          child: Text(_connecting || _probing ? 'Testing…' : 'Reconnect'),
                         ),
             ),
             if (selected == null && _devices.isNotEmpty)
@@ -337,32 +400,45 @@ class _ProbePageState extends State<ProbePage> {
             if (selected != null)
               Padding(
                 padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
-                child: Row(
+                child: Column(
                   children: <Widget>[
-                    Expanded(
-                      child: FilledButton(
-                        onPressed: _connecting
-                            ? null
-                            : () => _cast(
-                                  _testMp4,
-                                  CastMediaType.mp4,
-                                  'FlowCast MP4 test',
-                                ),
-                        child: const Text('Test MP4'),
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        onPressed: _probing ? null : () => _runNetworkPreflight(selected),
+                        icon: const Icon(Icons.lan_outlined),
+                        label: Text(_probing ? 'Testing ports…' : 'Network test 8008/8009'),
                       ),
                     ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: FilledButton.tonal(
-                        onPressed: _connecting
-                            ? null
-                            : () => _cast(
-                                  _testHls,
-                                  CastMediaType.hls,
-                                  'FlowCast HLS test',
-                                ),
-                        child: const Text('Test HLS'),
-                      ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: <Widget>[
+                        Expanded(
+                          child: FilledButton(
+                            onPressed: (_connecting || _probing)
+                                ? null
+                                : () => _cast(
+                                      _testMp4,
+                                      CastMediaType.mp4,
+                                      'FlowCast MP4 test',
+                                    ),
+                            child: const Text('Test MP4'),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: FilledButton.tonal(
+                            onPressed: (_connecting || _probing)
+                                ? null
+                                : () => _cast(
+                                      _testHls,
+                                      CastMediaType.hls,
+                                      'FlowCast HLS test',
+                                    ),
+                            child: const Text('Test HLS'),
+                          ),
+                        ),
+                      ],
                     ),
                   ],
                 ),

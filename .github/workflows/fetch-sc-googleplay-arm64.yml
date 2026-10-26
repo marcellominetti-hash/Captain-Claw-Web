@@ -1,0 +1,61 @@
+name: Fetch StreamingCommunity GooglePlay arm64
+on:
+  push:
+    branches: [flowcast-probe-build]
+    paths:
+      - '.github/workflows/fetch-sc-googleplay-arm64.yml'
+  workflow_dispatch:
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install goopdl
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install goopdl
+          goopdl --help | head -100
+
+      - name: Resolve app and download exact arm64 build
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p sc-arm64
+          goopdl info com.devshifters.streamingcommunity --country IT | tee info.txt || true
+          goopdl latest com.devshifters.streamingcommunity --country IT | tee latest.txt || true
+          goopdl download com.devshifters.streamingcommunity -a arm64 -v 58 -o sc-arm64 --country IT || \
+          goopdl download com.devshifters.streamingcommunity -a arm64 -v 3.1.0 -o sc-arm64 --country IT || \
+          goopdl download com.devshifters.streamingcommunity -a arm64 -o sc-arm64 --country IT
+          find sc-arm64 -type f -printf '%P %s\n' | sort | tee listing.txt
+          python - <<'PY'
+          import zipfile, pathlib, json
+          root=pathlib.Path('sc-arm64')
+          report=[]
+          for p in root.rglob('*'):
+              if p.is_file() and p.suffix.lower() in ('.apk','.xapk','.apks'):
+                  item={'file':str(p),'size':p.stat().st_size,'zip':zipfile.is_zipfile(p),'arm64_entries':[],'libapp_entries':[]}
+                  if zipfile.is_zipfile(p):
+                      with zipfile.ZipFile(p) as z:
+                          names=z.namelist()
+                          item['arm64_entries']=[n for n in names if 'arm64-v8a' in n or 'arm64' in n.lower()][:100]
+                          item['libapp_entries']=[n for n in names if n.endswith('/libapp.so') or n=='lib/arm64-v8a/libapp.so'][:20]
+                  report.append(item)
+          print(json.dumps(report,indent=2))
+          pathlib.Path('inspection.json').write_text(json.dumps(report,indent=2))
+          PY
+
+      - name: Upload Google Play package
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: streamingcommunity-googleplay-arm64
+          path: |
+            sc-arm64
+            info.txt
+            latest.txt
+            listing.txt
+            inspection.json
+          if-no-files-found: warn
+          retention-days: 7

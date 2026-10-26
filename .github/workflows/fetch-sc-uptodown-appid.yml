@@ -1,0 +1,89 @@
+name: Resolve StreamingCommunity Uptodown appID
+on:
+  push:
+    branches: [flowcast-probe-build]
+    paths:
+      - '.github/workflows/fetch-sc-uptodown-appid.yml'
+  workflow_dispatch:
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Query Uptodown eAPI and download XAPK
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python -m pip install --quiet requests
+          python - <<'PY'
+          import requests, hashlib, datetime, json, urllib.parse, pathlib, zipfile
+          API='https://www.uptodown.app/eapi'
+          SECRET='$(=a%·!45J&S'
+          now=datetime.datetime.now(datetime.UTC)
+          epoch_ms=int(now.timestamp()*1000)
+          offset_ms=now.minute*60000+now.second*1000+now.microsecond//1000
+          hour_epoch=(epoch_ms-offset_ms)//1000
+          key=hashlib.sha256((SECRET+str(hour_epoch)).encode()).hexdigest()
+          H={'User-Agent':'Dalvik/2.1.0 (Linux; U; Android 14; SM-G955F Build/AP2A.240805.005)','Identificador':'Uptodown_Android','Identificador-Version':'707','APIKEY':key}
+          s=requests.Session()
+          q=urllib.parse.quote('Streaming Community')
+          u=f'{API}/v2/apps/search/{q}?page[limit]=50&page[offset]=0'
+          r=s.get(u,headers=H,timeout=30)
+          print('SEARCH',r.status_code,r.text[:4000])
+          r.raise_for_status()
+          data=r.json(); pathlib.Path('search.json').write_text(json.dumps(data,indent=2))
+          items=data.get('data',{}).get('results',[]) if isinstance(data,dict) else []
+          matches=[]
+          for it in items:
+              pkg=it.get('packageName') or it.get('packagename') or ''
+              name=it.get('name') or ''
+              if pkg=='com.devshifters.streamingcommunity' or ('streaming community' in name.lower() and 'devshifters' in json.dumps(it).lower()):
+                  matches.append(it)
+          print('MATCHES',json.dumps(matches,indent=2))
+          if not matches:
+              raise SystemExit('No matching result')
+          item=matches[0]
+          appid=str(item.get('appID') or item.get('id'))
+          pathlib.Path('appid.txt').write_text(appid)
+          vu=f'{API}/v3/app/{appid}/device/1/compatible/versions?page[limit]=50&page[offset]=0'
+          vr=s.get(vu,headers=H,timeout=30)
+          print('VERSIONS',vr.status_code,vr.text[:6000]); vr.raise_for_status()
+          versions=vr.json().get('data',[])
+          pathlib.Path('versions.json').write_text(json.dumps(versions,indent=2))
+          target=next((v for v in versions if str(v.get('version'))=='3.1.0'), versions[0] if versions else None)
+          if not target: raise SystemExit('No versions')
+          print('TARGET',json.dumps(target,indent=2))
+          fid=str(target.get('fileID') or target.get('fileid'))
+          du=f'{API}/apps/{appid}/file/{fid}/downloadUrl?update=0'
+          dr=s.get(du,headers=H,timeout=30); print('DLURL',dr.status_code,dr.text[:2000]); dr.raise_for_status()
+          dl=dr.json()['data']['downloadURL']
+          pathlib.Path('download-url.txt').write_text(dl)
+          with s.get(dl,headers={'User-Agent':H['User-Agent']},timeout=60,stream=True) as resp:
+              resp.raise_for_status()
+              with open('streamingcommunity-3.1.0.xapk','wb') as f:
+                  for ch in resp.iter_content(1024*1024):
+                      if ch:f.write(ch)
+          p=pathlib.Path('streamingcommunity-3.1.0.xapk')
+          print('SIZE',p.stat().st_size)
+          if not zipfile.is_zipfile(p): raise SystemExit('Not zip')
+          with zipfile.ZipFile(p) as z:
+              names=z.namelist(); pathlib.Path('listing.txt').write_text('\n'.join(names))
+              arm=[n for n in names if 'arm64' in n.lower() or 'arm64-v8a' in n.lower()]
+              print('ARM64',arm[:100]); pathlib.Path('inspection.json').write_text(json.dumps({'arm64':arm,'files':names[:300]},indent=2))
+          PY
+
+      - name: Upload package
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: streamingcommunity-uptodown-appid
+          path: |
+            streamingcommunity-3.1.0.xapk
+            search.json
+            appid.txt
+            versions.json
+            download-url.txt
+            listing.txt
+            inspection.json
+          if-no-files-found: warn
+          retention-days: 7

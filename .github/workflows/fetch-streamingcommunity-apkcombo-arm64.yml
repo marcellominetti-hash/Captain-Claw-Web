@@ -1,0 +1,85 @@
+name: Fetch StreamingCommunity APKCombo arm64
+on:
+  push:
+    branches: [flowcast-probe-build]
+    paths:
+      - '.github/workflows/fetch-streamingcommunity-apkcombo-arm64.yml'
+  workflow_dispatch:
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve APKCombo 3.1.0 download
+        shell: bash
+        run: |
+          set -euxo pipefail
+          UA='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/130 Safari/537.36'
+          PAGE='https://apkcombo.com/streaming-community/com.devshifters.streamingcommunity/download/phone-3.1.0-apk'
+          curl -fL --retry 3 -A "$UA" -c cookies.txt -b cookies.txt "$PAGE" -o page.html
+          python - <<'PY'
+          import re, html, json
+          s=open('page.html',errors='ignore').read()
+          # collect links and script-embedded URLs that look like package downloads
+          vals=[]
+          for pat in [r'href=["\x27]([^"\x27]+)["\x27]', r'(https?://[^"\x27\\\s<>]+)']:
+              vals += re.findall(pat,s,re.I)
+          vals=[html.unescape(v) for v in vals]
+          cand=[]
+          for v in vals:
+              lv=v.lower()
+              if any(x in lv for x in ['download-apk','download/xapk','.xapk','.apks','.apk','androidcombo','apkcombo']):
+                  cand.append(v)
+          open('links.txt','w').write('\n'.join(dict.fromkeys(cand)))
+          print('\n'.join(dict.fromkeys(cand))[:20000])
+          # Prefer external CDN/package links, avoid page URLs/installers
+          for v in cand:
+              lv=v.lower()
+              if ('androidcombo' in lv or '.xapk' in lv or '.apks' in lv) and 'installer' not in lv:
+                  if v.startswith('//'): v='https:'+v
+                  elif v.startswith('/'): v='https://apkcombo.com'+v
+                  open('download-url.txt','w').write(v)
+                  print('SELECTED',v)
+                  break
+          else:
+              raise SystemExit('No direct package candidate found')
+          PY
+
+      - name: Download package
+        shell: bash
+        run: |
+          set -euxo pipefail
+          UA='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/130 Safari/537.36'
+          URL="$(cat download-url.txt)"
+          curl -fL --retry 3 --retry-delay 2 -A "$UA" -e 'https://apkcombo.com/' -c cookies.txt -b cookies.txt "$URL" -o streamingcommunity-apkcombo.bin
+          file streamingcommunity-apkcombo.bin
+          ls -lh streamingcommunity-apkcombo.bin
+          sha256sum streamingcommunity-apkcombo.bin | tee sha256.txt
+          python - <<'PY'
+          import zipfile
+          p='streamingcommunity-apkcombo.bin'
+          if not zipfile.is_zipfile(p):
+              raise SystemExit('Downloaded payload is not an APK/XAPK/APKS zip')
+          with zipfile.ZipFile(p) as z:
+              names=z.namelist()
+              open('listing.txt','w').write('\n'.join(names))
+              arm64=[n for n in names if 'arm64' in n.lower() or 'arm64-v8a' in n.lower()]
+              print('FILES',len(names))
+              print('ARM64',arm64[:100])
+              print('\n'.join(names[:300]))
+          PY
+
+      - name: Upload package
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: streamingcommunity-apkcombo-arm64
+          path: |
+            streamingcommunity-apkcombo.bin
+            page.html
+            links.txt
+            download-url.txt
+            listing.txt
+            sha256.txt
+          if-no-files-found: warn
+          retention-days: 7

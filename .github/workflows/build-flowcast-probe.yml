@@ -1,0 +1,79 @@
+name: Build FlowCast Probe APK
+
+on:
+  push:
+    branches:
+      - flowcast-probe-build
+    paths:
+      - 'flowcast_probe_src/**'
+      - '.github/workflows/build-flowcast-probe.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Flutter SDK 3.47.7
+        shell: bash
+        run: |
+          set -euxo pipefail
+          FLUTTER_URL='https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_3.47.7-stable.tar.xz'
+          FLUTTER_SHA='af7455f540df951184c7953fbe3cf884766e7541dacf8571f9f582db03dd6230'
+          curl --retry 4 --retry-all-errors -L "$FLUTTER_URL" -o "$RUNNER_TEMP/flutter.tar.xz"
+          echo "$FLUTTER_SHA  $RUNNER_TEMP/flutter.tar.xz" | sha256sum -c -
+          tar -xf "$RUNNER_TEMP/flutter.tar.xz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/flutter/bin/flutter" config --no-analytics
+          "$RUNNER_TEMP/flutter/bin/flutter" --version
+
+      - name: Create clean Flutter Android project
+        run: |
+          set -euxo pipefail
+          rm -rf .flowcast_build
+          flutter create \
+            --platforms=android \
+            --org com.flowcast \
+            --project-name flowcast_probe \
+            .flowcast_build
+          cp flowcast_probe_src/pubspec.yaml .flowcast_build/pubspec.yaml
+          cp flowcast_probe_src/main.dart .flowcast_build/lib/main.dart
+          cp flowcast_probe_src/AndroidManifest.xml .flowcast_build/android/app/src/main/AndroidManifest.xml
+          cp flowcast_probe_src/MainActivity.kt .flowcast_build/android/app/src/main/kotlin/com/flowcast/flowcast_probe/MainActivity.kt
+
+      - name: Resolve dependencies
+        working-directory: .flowcast_build
+        run: flutter pub get
+
+      - name: Analyze
+        working-directory: .flowcast_build
+        run: flutter analyze
+
+      - name: Build installable release APK
+        working-directory: .flowcast_build
+        run: flutter build apk --release
+
+      - name: Stage APK
+        run: |
+          cp .flowcast_build/build/app/outputs/flutter-apk/app-release.apk FlowCast-Probe-v0.2.1.apk
+          sha256sum FlowCast-Probe-v0.2.1.apk | tee FlowCast-Probe-v0.2.1.sha256
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: FlowCast-Probe-v0.2.1
+          path: |
+            FlowCast-Probe-v0.2.1.apk
+            FlowCast-Probe-v0.2.1.sha256
+          if-no-files-found: error
+          retention-days: 14

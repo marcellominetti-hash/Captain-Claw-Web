@@ -1,0 +1,498 @@
+name: Build FlowCast Player
+on:
+  push:
+    branches: [flowcast-probe-build]
+    paths:
+      - '.github/workflows/build-flowcast-player.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.3.1'
+
+      - name: Create FlowCast Player project from validated Cast probe
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cp -a official_cast_probe flowcast_player
+          rm -rf flowcast_player/app/src/main/java/com/flowcast/officialprobe
+          mkdir -p flowcast_player/app/src/main/java/com/flowcast/player
+
+          cat > flowcast_player/app/build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application'
+          }
+
+          android {
+              namespace 'com.flowcast.player'
+              compileSdk 37
+
+              defaultConfig {
+                  applicationId 'com.flowcast.player'
+                  minSdk 24
+                  targetSdk 36
+                  versionCode 1
+                  versionName '0.1.0'
+              }
+
+              buildTypes {
+                  release {
+                      minifyEnabled false
+                      signingConfig signingConfigs.debug
+                      proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+          }
+
+          dependencies {
+              implementation 'androidx.appcompat:appcompat:1.7.1'
+              implementation 'com.google.android.gms:play-services-cast-framework:23.0.0'
+          }
+          EOF
+
+          cat > flowcast_player/app/src/main/AndroidManifest.xml <<'EOF'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+              <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+              <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+
+              <application
+                  android:allowBackup="false"
+                  android:label="FlowCast Player"
+                  android:theme="@style/AppTheme">
+
+                  <meta-data
+                      android:name="com.google.android.gms.cast.framework.OPTIONS_PROVIDER_CLASS_NAME"
+                      android:value="com.flowcast.player.CastOptionsProvider" />
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:launchMode="singleTop">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+
+                      <!-- Receive video URLs shared by other apps. -->
+                      <intent-filter>
+                          <action android:name="android.intent.action.SEND" />
+                          <category android:name="android.intent.category.DEFAULT" />
+                          <data android:mimeType="text/plain" />
+                      </intent-filter>
+                      <intent-filter>
+                          <action android:name="android.intent.action.SEND" />
+                          <category android:name="android.intent.category.DEFAULT" />
+                          <data android:mimeType="video/*" />
+                      </intent-filter>
+
+                      <!-- Receive explicit media ACTION_VIEW intents. -->
+                      <intent-filter>
+                          <action android:name="android.intent.action.VIEW" />
+                          <category android:name="android.intent.category.DEFAULT" />
+                          <data android:scheme="http" android:mimeType="video/*" />
+                          <data android:scheme="https" android:mimeType="video/*" />
+                          <data android:scheme="http" android:mimeType="application/x-mpegURL" />
+                          <data android:scheme="https" android:mimeType="application/x-mpegURL" />
+                          <data android:scheme="http" android:mimeType="application/vnd.apple.mpegurl" />
+                          <data android:scheme="https" android:mimeType="application/vnd.apple.mpegurl" />
+                          <data android:scheme="http" android:mimeType="application/dash+xml" />
+                          <data android:scheme="https" android:mimeType="application/dash+xml" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          cat > flowcast_player/app/src/main/java/com/flowcast/player/CastOptionsProvider.java <<'EOF'
+          package com.flowcast.player;
+
+          import android.content.Context;
+          import com.google.android.gms.cast.CastMediaControlIntent;
+          import com.google.android.gms.cast.framework.CastOptions;
+          import com.google.android.gms.cast.framework.OptionsProvider;
+          import com.google.android.gms.cast.framework.SessionProvider;
+          import java.util.List;
+
+          public final class CastOptionsProvider implements OptionsProvider {
+              @Override
+              public CastOptions getCastOptions(Context context) {
+                  return new CastOptions.Builder()
+                          .setReceiverApplicationId(CastMediaControlIntent.DEFAULT_MEDIA_RECEIVER_APPLICATION_ID)
+                          .setStopReceiverApplicationWhenEndingSession(false)
+                          .build();
+              }
+
+              @Override
+              public List<SessionProvider> getAdditionalSessionProviders(Context context) {
+                  return null;
+              }
+          }
+          EOF
+
+          cat > flowcast_player/app/src/main/java/com/flowcast/player/MainActivity.java <<'EOF'
+          package com.flowcast.player;
+
+          import android.content.ClipData;
+          import android.content.ClipboardManager;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.net.Uri;
+          import android.os.Bundle;
+          import android.text.TextUtils;
+          import android.text.format.DateFormat;
+          import android.widget.Button;
+          import android.widget.EditText;
+          import android.widget.TextView;
+          import android.widget.Toast;
+
+          import androidx.appcompat.app.AppCompatActivity;
+          import androidx.mediarouter.app.MediaRouteButton;
+
+          import com.google.android.gms.cast.MediaInfo;
+          import com.google.android.gms.cast.MediaLoadRequestData;
+          import com.google.android.gms.cast.MediaMetadata;
+          import com.google.android.gms.cast.framework.CastButtonFactory;
+          import com.google.android.gms.cast.framework.CastContext;
+          import com.google.android.gms.cast.framework.CastSession;
+          import com.google.android.gms.cast.framework.SessionManager;
+          import com.google.android.gms.cast.framework.SessionManagerListener;
+          import com.google.android.gms.cast.framework.media.RemoteMediaClient;
+
+          import java.util.Date;
+          import java.util.Locale;
+
+          public class MainActivity extends AppCompatActivity {
+              private EditText urlInput;
+              private TextView statusText;
+              private TextView logText;
+              private CastContext castContext;
+              private SessionManager sessionManager;
+              private CastSession castSession;
+              private String pendingUrl;
+
+              private final SessionManagerListener<CastSession> sessionListener = new SessionManagerListener<CastSession>() {
+                  @Override public void onSessionStarting(CastSession session) { log("SESSION: starting"); }
+                  @Override public void onSessionStarted(CastSession session, String sessionId) {
+                      castSession = session;
+                      setStatus("Connesso: " + deviceName(session));
+                      log("SESSION: started • " + deviceName(session));
+                      if (!TextUtils.isEmpty(pendingUrl)) {
+                          String next = pendingUrl;
+                          pendingUrl = null;
+                          loadUrl(next);
+                      }
+                  }
+                  @Override public void onSessionStartFailed(CastSession session, int error) {
+                      castSession = null; log("SESSION START FAILED: " + error); setStatus("Connessione Cast non riuscita");
+                  }
+                  @Override public void onSessionEnding(CastSession session) { log("SESSION: ending"); }
+                  @Override public void onSessionEnded(CastSession session, int error) {
+                      castSession = null; log("SESSION: ended • " + error); setStatus("Nessun dispositivo Cast connesso");
+                  }
+                  @Override public void onSessionResuming(CastSession session, String sessionId) { log("SESSION: resuming"); }
+                  @Override public void onSessionResumed(CastSession session, boolean wasSuspended) {
+                      castSession = session; log("SESSION: resumed"); setStatus("Riconnesso: " + deviceName(session));
+                      if (!TextUtils.isEmpty(pendingUrl)) { String next = pendingUrl; pendingUrl = null; loadUrl(next); }
+                  }
+                  @Override public void onSessionResumeFailed(CastSession session, int error) {
+                      castSession = null; log("SESSION RESUME FAILED: " + error); setStatus("Riconnessione Cast fallita");
+                  }
+                  @Override public void onSessionSuspended(CastSession session, int reason) {
+                      castSession = session; log("SESSION: suspended • " + reason); setStatus("Sessione Cast sospesa");
+                  }
+              };
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  setContentView(R.layout.activity_main);
+
+                  urlInput = findViewById(R.id.urlInput);
+                  statusText = findViewById(R.id.statusText);
+                  logText = findViewById(R.id.logText);
+                  Button pasteButton = findViewById(R.id.pasteButton);
+                  Button castUrlButton = findViewById(R.id.castUrlButton);
+                  Button clearButton = findViewById(R.id.clearButton);
+                  MediaRouteButton castButton = findViewById(R.id.castButton);
+
+                  log("FlowCast Player 0.1");
+                  log("Google Cast Sender SDK 23.0.0");
+
+                  try {
+                      castContext = CastContext.getSharedInstance(this);
+                      sessionManager = castContext.getSessionManager();
+                      CastButtonFactory.setUpMediaRouteButton(getApplicationContext(), castButton);
+                      castSession = sessionManager.getCurrentCastSession();
+                      if (castSession != null && castSession.isConnected()) {
+                          setStatus("Connesso: " + deviceName(castSession));
+                      } else {
+                          setStatus("Tocca Cast e seleziona Mi Box");
+                      }
+                  } catch (Exception e) {
+                      setStatus("Errore inizializzazione Cast");
+                      log("INIT ERROR: " + e);
+                  }
+
+                  pasteButton.setOnClickListener(v -> pasteFromClipboard());
+                  castUrlButton.setOnClickListener(v -> queueOrLoad(urlInput.getText().toString().trim()));
+                  clearButton.setOnClickListener(v -> { urlInput.setText(""); pendingUrl = null; });
+
+                  handleIncomingIntent(getIntent());
+              }
+
+              @Override
+              protected void onNewIntent(Intent intent) {
+                  super.onNewIntent(intent);
+                  setIntent(intent);
+                  handleIncomingIntent(intent);
+              }
+
+              @Override
+              protected void onResume() {
+                  super.onResume();
+                  if (sessionManager != null) {
+                      sessionManager.addSessionManagerListener(sessionListener, CastSession.class);
+                      CastSession current = sessionManager.getCurrentCastSession();
+                      if (current != null && current.isConnected()) {
+                          castSession = current;
+                          setStatus("Connesso: " + deviceName(current));
+                      }
+                  }
+              }
+
+              @Override
+              protected void onPause() {
+                  if (sessionManager != null) sessionManager.removeSessionManagerListener(sessionListener, CastSession.class);
+                  super.onPause();
+              }
+
+              private void handleIncomingIntent(Intent intent) {
+                  if (intent == null) return;
+                  String candidate = null;
+                  String action = intent.getAction();
+                  if (Intent.ACTION_VIEW.equals(action) && intent.getData() != null) {
+                      candidate = intent.getData().toString();
+                      log("Ricevuto ACTION_VIEW");
+                  } else if (Intent.ACTION_SEND.equals(action)) {
+                      Uri stream = intent.getParcelableExtra(Intent.EXTRA_STREAM);
+                      if (stream != null && ("http".equalsIgnoreCase(stream.getScheme()) || "https".equalsIgnoreCase(stream.getScheme()))) {
+                          candidate = stream.toString();
+                      }
+                      if (candidate == null) {
+                          CharSequence text = intent.getCharSequenceExtra(Intent.EXTRA_TEXT);
+                          if (text != null) candidate = extractFirstHttpUrl(text.toString());
+                      }
+                      log("Ricevuto ACTION_SEND");
+                  }
+                  if (!TextUtils.isEmpty(candidate)) {
+                      urlInput.setText(candidate);
+                      queueOrLoad(candidate);
+                  }
+              }
+
+              private void pasteFromClipboard() {
+                  ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                  if (cm == null || !cm.hasPrimaryClip()) {
+                      Toast.makeText(this, "Appunti vuoti", Toast.LENGTH_SHORT).show(); return;
+                  }
+                  ClipData clip = cm.getPrimaryClip();
+                  if (clip == null || clip.getItemCount() == 0) return;
+                  CharSequence text = clip.getItemAt(0).coerceToText(this);
+                  String url = text == null ? null : extractFirstHttpUrl(text.toString());
+                  if (TextUtils.isEmpty(url)) {
+                      Toast.makeText(this, "Nessun link http/https negli appunti", Toast.LENGTH_SHORT).show(); return;
+                  }
+                  urlInput.setText(url);
+                  log("Link incollato");
+              }
+
+              private String extractFirstHttpUrl(String text) {
+                  if (text == null) return null;
+                  int h1 = text.indexOf("https://");
+                  int h2 = text.indexOf("http://");
+                  int start;
+                  if (h1 < 0) start = h2;
+                  else if (h2 < 0) start = h1;
+                  else start = Math.min(h1, h2);
+                  if (start < 0) return null;
+                  int end = text.length();
+                  for (int i = start; i < text.length(); i++) {
+                      char c = text.charAt(i);
+                      if (Character.isWhitespace(c) || c == '\"' || c == '\'' || c == '<' || c == '>') { end = i; break; }
+                  }
+                  return text.substring(start, end).trim();
+              }
+
+              private void queueOrLoad(String url) {
+                  if (!isHttpUrl(url)) {
+                      Toast.makeText(this, "Inserisci un link http/https valido", Toast.LENGTH_SHORT).show(); return;
+                  }
+                  CastSession session = currentSession();
+                  if (session == null || !session.isConnected()) {
+                      pendingUrl = url;
+                      setStatus("Link pronto. Ora seleziona Mi Box dal pulsante Cast");
+                      log("URL in coda: attendo sessione Cast");
+                      return;
+                  }
+                  loadUrl(url);
+              }
+
+              private void loadUrl(String url) {
+                  CastSession session = currentSession();
+                  if (session == null || !session.isConnected()) {
+                      pendingUrl = url; setStatus("Sessione Cast non connessa"); return;
+                  }
+                  RemoteMediaClient client = session.getRemoteMediaClient();
+                  if (client == null) { log("LOAD ABORTED: RemoteMediaClient assente"); return; }
+
+                  String type = inferContentType(url);
+                  MediaMetadata metadata = new MediaMetadata(MediaMetadata.MEDIA_TYPE_MOVIE);
+                  metadata.putString(MediaMetadata.KEY_TITLE, "FlowCast");
+                  MediaInfo mediaInfo = new MediaInfo.Builder(url)
+                          .setStreamType(MediaInfo.STREAM_TYPE_BUFFERED)
+                          .setContentType(type)
+                          .setMetadata(metadata)
+                          .build();
+                  MediaLoadRequestData request = new MediaLoadRequestData.Builder()
+                          .setMediaInfo(mediaInfo)
+                          .setAutoplay(true)
+                          .build();
+                  log("LOAD → " + type);
+                  setStatus("Invio al " + deviceName(session));
+                  client.load(request).setResultCallback(result -> {
+                      boolean ok = result.getStatus().isSuccess();
+                      int code = result.getStatus().getStatusCode();
+                      log("LOAD RESULT: success=" + ok + " • status=" + code);
+                      setStatus(ok ? "Riproduzione su " + deviceName(session) : "Caricamento fallito • " + code);
+                  });
+              }
+
+              private CastSession currentSession() {
+                  if (castSession != null && castSession.isConnected()) return castSession;
+                  if (sessionManager != null) castSession = sessionManager.getCurrentCastSession();
+                  return castSession;
+              }
+
+              private boolean isHttpUrl(String value) {
+                  if (TextUtils.isEmpty(value)) return false;
+                  String s = value.toLowerCase(Locale.ROOT);
+                  return s.startsWith("http://") || s.startsWith("https://");
+              }
+
+              private String inferContentType(String url) {
+                  String clean = url.toLowerCase(Locale.ROOT);
+                  int q = clean.indexOf('?'); if (q >= 0) clean = clean.substring(0, q);
+                  if (clean.endsWith(".m3u8")) return "application/x-mpegURL";
+                  if (clean.endsWith(".mpd")) return "application/dash+xml";
+                  if (clean.endsWith(".webm")) return "video/webm";
+                  if (clean.endsWith(".mkv")) return "video/x-matroska";
+                  if (clean.endsWith(".mov")) return "video/quicktime";
+                  if (clean.endsWith(".mp4") || clean.endsWith(".m4v")) return "video/mp4";
+                  return "application/x-mpegURL";
+              }
+
+              private String deviceName(CastSession session) {
+                  try {
+                      if (session != null && session.getCastDevice() != null && session.getCastDevice().getFriendlyName() != null)
+                          return session.getCastDevice().getFriendlyName();
+                  } catch (Exception ignored) {}
+                  return "Mi Box";
+              }
+
+              private void setStatus(String text) { runOnUiThread(() -> statusText.setText(text)); }
+              private void log(String message) {
+                  String time = DateFormat.format("HH:mm:ss", new Date()).toString();
+                  runOnUiThread(() -> {
+                      String old = logText.getText().toString();
+                      logText.setText(old.isEmpty() ? time + "  " + message : old + "\n" + time + "  " + message);
+                  });
+              }
+          }
+          EOF
+
+          cat > flowcast_player/app/src/main/res/layout/activity_main.xml <<'EOF'
+          <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent"
+              android:fillViewport="true">
+              <LinearLayout
+                  android:layout_width="match_parent"
+                  android:layout_height="wrap_content"
+                  android:orientation="vertical"
+                  android:padding="20dp">
+
+                  <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                      android:text="FlowCast Player" android:textSize="28sp" android:textStyle="bold" />
+                  <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                      android:layout_marginTop="4dp" android:text="Telefono → Chromecast built-in del Mi Box" android:textSize="14sp" />
+
+                  <TextView android:id="@+id/statusText" android:layout_width="match_parent" android:layout_height="wrap_content"
+                      android:layout_marginTop="16dp" android:text="Inizializzazione…" android:textSize="17sp" />
+
+                  <androidx.mediarouter.app.MediaRouteButton
+                      android:id="@+id/castButton" android:layout_width="72dp" android:layout_height="56dp"
+                      android:layout_marginTop="12dp" android:contentDescription="Cast" />
+
+                  <EditText android:id="@+id/urlInput" android:layout_width="match_parent" android:layout_height="wrap_content"
+                      android:layout_marginTop="12dp" android:hint="https://…/video.m3u8" android:inputType="textUri"
+                      android:minLines="2" android:maxLines="4" />
+
+                  <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                      android:orientation="horizontal" android:layout_marginTop="8dp">
+                      <Button android:id="@+id/pasteButton" android:layout_width="0dp" android:layout_height="wrap_content"
+                          android:layout_weight="1" android:text="Incolla" />
+                      <Button android:id="@+id/clearButton" android:layout_width="0dp" android:layout_height="wrap_content"
+                          android:layout_weight="1" android:layout_marginStart="8dp" android:text="Pulisci" />
+                  </LinearLayout>
+
+                  <Button android:id="@+id/castUrlButton" android:layout_width="match_parent" android:layout_height="wrap_content"
+                      android:layout_marginTop="8dp" android:text="TRASMETTI AL MI BOX" />
+
+                  <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                      android:layout_marginTop="20dp" android:text="Log" android:textStyle="bold" />
+                  <TextView android:id="@+id/logText" android:layout_width="match_parent" android:layout_height="wrap_content"
+                      android:layout_marginTop="8dp" android:fontFamily="monospace" android:textIsSelectable="true" android:textSize="12sp" />
+              </LinearLayout>
+          </ScrollView>
+          EOF
+
+          cat > flowcast_player/app/src/main/res/values/strings.xml <<'EOF'
+          <resources><string name="app_name">FlowCast Player</string></resources>
+          EOF
+
+      - name: Build release APK
+        working-directory: flowcast_player
+        run: gradle :app:assembleRelease --stacktrace
+
+      - name: Stage and checksum
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cp flowcast_player/app/build/outputs/apk/release/app-release.apk FlowCast-Player-v0.1.apk
+          sha256sum FlowCast-Player-v0.1.apk | tee FlowCast-Player-v0.1.sha256
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: FlowCast-Player-v0.1
+          path: |
+            FlowCast-Player-v0.1.apk
+            FlowCast-Player-v0.1.sha256
+          if-no-files-found: error
+          retention-days: 14

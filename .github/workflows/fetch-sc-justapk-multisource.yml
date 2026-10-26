@@ -1,0 +1,62 @@
+name: Fetch StreamingCommunity multisource
+on:
+  push:
+    branches: [flowcast-probe-build]
+    paths:
+      - '.github/workflows/fetch-sc-justapk-multisource.yml'
+  workflow_dispatch:
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install justapk
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install 'git+https://github.com/TheQmaks/justapk.git'
+
+      - name: Probe sources
+        shell: bash
+        run: |
+          set +e
+          mkdir -p results logs
+          for SRC in apk20 apkmirror apkcombo apkpure; do
+            echo "=== $SRC ===" | tee "logs/$SRC.txt"
+            justapk info com.devshifters.streamingcommunity -s "$SRC" 2>&1 | tee -a "logs/$SRC.txt"
+            mkdir -p "results/$SRC"
+            justapk download com.devshifters.streamingcommunity -s "$SRC" -v 3.1.0 -o "results/$SRC" --no-convert 2>&1 | tee -a "logs/$SRC.txt"
+            if [ ${PIPESTATUS[0]} -ne 0 ]; then
+              justapk download com.devshifters.streamingcommunity -s "$SRC" -o "results/$SRC" --no-convert 2>&1 | tee -a "logs/$SRC.txt"
+            fi
+          done
+          set -e
+          find results -type f -printf '%P %s\n' | sort | tee listing.txt
+          python - <<'PY'
+          import pathlib,zipfile,json,hashlib,os
+          report=[]
+          for p in pathlib.Path('results').rglob('*'):
+              if not p.is_file(): continue
+              d={'file':str(p),'size':p.stat().st_size,'sha256':hashlib.sha256(p.read_bytes()).hexdigest(),'zip':zipfile.is_zipfile(p)}
+              if zipfile.is_zipfile(p):
+                  with zipfile.ZipFile(p) as z:
+                      n=z.namelist()
+                      d['arm64']=[x for x in n if 'arm64' in x.lower() or 'arm64-v8a' in x.lower()][:300]
+                      d['v7']=[x for x in n if 'armeabi' in x.lower()][:100]
+                      d['apks']=[x for x in n if x.lower().endswith('.apk')][:200]
+                      d['libapp']=[x for x in n if x.endswith('libapp.so')][:50]
+              report.append(d)
+          open('inspection.json','w').write(json.dumps(report,indent=2))
+          print(json.dumps(report,indent=2))
+          PY
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: streamingcommunity-multisource
+          path: |
+            results
+            logs
+            listing.txt
+            inspection.json
+          if-no-files-found: warn
+          retention-days: 7

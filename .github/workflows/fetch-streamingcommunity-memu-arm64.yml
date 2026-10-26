@@ -17,14 +17,14 @@ jobs:
           UA='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/130 Safari/537.36'
           PAGE='https://m.memuplay.com/it/download-streaming-community.html'
           curl -fL -A "$UA" -c cookies.txt -b cookies.txt "$PAGE" -o page.html
-          grep -oE 'https?://[^"'"' ]+|apkdownload\.php\?[^"'"' ]+' page.html | grep -i 'apkdownload\|xapk\|apk' | head -50 | tee links.txt || true
           URL=$(python - <<'PY'
           import re, html
           s=open('page.html',errors='ignore').read()
-          m=re.search(r'href=["\x27]([^"\x27]*apkdownload\.php\?[^"\x27]+)["\x27]',s,re.I)
-          if not m:
+          matches=re.findall(r'href=["\x27]([^"\x27]*apkdownload\.php\?[^"\x27]+)["\x27]',s,re.I)
+          if not matches:
               raise SystemExit('No apkdownload link in page')
-          u=html.unescape(m.group(1))
+          open('links.txt','w').write('\n'.join(matches))
+          u=html.unescape(matches[0])
           if u.startswith('/'):
               u='https://www.memuplay.com'+u
           elif not u.startswith('http'):
@@ -38,7 +38,7 @@ jobs:
           ls -lh streamingcommunity-memu.bin
           sha256sum streamingcommunity-memu.bin | tee sha256.txt
           python - <<'PY'
-          import zipfile, os
+          import zipfile
           p='streamingcommunity-memu.bin'
           if not zipfile.is_zipfile(p):
               raise SystemExit('Downloaded payload is not APK/XAPK zip')
@@ -46,7 +46,8 @@ jobs:
               names=z.namelist()
               open('listing.txt','w').write('\n'.join(names))
               print('\n'.join(names[:500]))
-              print('ARM64', [n for n in names if 'arm64' in n.lower()][:100])
+              arm64=[n for n in names if 'arm64' in n.lower() or 'arm64-v8a' in n.lower()]
+              print('ARM64', arm64[:100])
           PY
 
       - name: Upload package

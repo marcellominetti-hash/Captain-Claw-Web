@@ -1,0 +1,20 @@
+name: flowcast_probe
+description: Minimal Chromecast diagnostic sender for Mi Box discovery and playback.
+publish_to: "none"
+version: 0.2.1+3
+
+environment:
+  sdk: ">=3.7.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  dart_cast: ^0.7.4
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true

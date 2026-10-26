@@ -1,0 +1,35 @@
+name: Export Android tools
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - flowcast-probe-build
+    paths:
+      - '.github/workflows/export-android-tools.yml'
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare tools
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p android-tools
+          curl -L --fail -o android-tools/apktool.jar https://github.com/iBotPeaches/Apktool/releases/download/v3.0.3/apktool_3.0.3.jar
+          BUILD_TOOLS=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          cp "$BUILD_TOOLS/zipalign" android-tools/
+          cp "$BUILD_TOOLS/apksigner" android-tools/
+          cp "$BUILD_TOOLS/lib/apksigner.jar" android-tools/
+          chmod +x android-tools/zipalign android-tools/apksigner
+          java -jar android-tools/apktool.jar --version
+          android-tools/apksigner version
+          android-tools/zipalign -h >/dev/null || true
+      - name: Upload tools
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-patch-tools
+          path: android-tools
+          retention-days: 7

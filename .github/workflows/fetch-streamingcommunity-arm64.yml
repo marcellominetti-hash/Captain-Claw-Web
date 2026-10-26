@@ -1,0 +1,31 @@
+name: Fetch StreamingCommunity arm64
+on:
+  push:
+    branches: [flowcast-probe-build]
+    paths: ['.github/workflows/fetch-streamingcommunity-arm64.yml']
+  workflow_dispatch:
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download latest XAPK from APKPure
+        run: |
+          set -euxo pipefail
+          curl -fL --retry 3 --retry-delay 2 \
+            -A 'Mozilla/5.0' \
+            'https://d.apkpure.com/b/XAPK/com.devshifters.streamingcommunity?version=latest' \
+            -o streamingcommunity-latest.xapk
+          ls -lh streamingcommunity-latest.xapk
+          unzip -p streamingcommunity-latest.xapk manifest.json | tee manifest.json
+          unzip -l streamingcommunity-latest.xapk | tee listing.txt
+          grep -q 'arm64' listing.txt
+      - name: Upload arm64 XAPK
+        uses: actions/upload-artifact@v4
+        with:
+          name: streamingcommunity-arm64-xapk
+          path: |
+            streamingcommunity-latest.xapk
+            manifest.json
+            listing.txt
+          retention-days: 2

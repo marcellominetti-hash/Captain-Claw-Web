@@ -1,0 +1,91 @@
+name: Fetch StreamingCommunity arm64 direct
+on:
+  push:
+    branches: [flowcast-probe-build]
+    paths:
+      - '.github/workflows/fetch-streamingcommunity-arm64-direct.yml'
+  workflow_dispatch:
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Try Aptoide public API
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python - <<'PY'
+          import requests, json, sys
+          urls=[
+            'https://ws75.aptoide.com/api/7/app/get/package_name=com.devshifters.streamingcommunity',
+            'https://ws75.aptoide.com/api/7/app/get/package_name=com.devshifters.streamingcommunity/store_name=apps',
+            'https://ws2.aptoide.com/api/7/app/get/package_name=com.devshifters.streamingcommunity'
+          ]
+          data=None
+          for u in urls:
+              try:
+                  r=requests.get(u,timeout=30,headers={'User-Agent':'Mozilla/5.0'})
+                  print('URL',u,'STATUS',r.status_code)
+                  print(r.text[:500])
+                  if r.ok:
+                      j=r.json()
+                      if j.get('info',{}).get('status')=='OK' or j.get('nodes') or j.get('data'):
+                          data=j; break
+              except Exception as e:
+                  print('ERR',u,e)
+          if not data:
+              sys.exit('No usable Aptoide API response')
+          open('aptoide.json','w').write(json.dumps(data,indent=2))
+          # recursively find plausible APK/XAPK URL strings
+          found=[]
+          def walk(x):
+              if isinstance(x,dict):
+                  for v in x.values(): walk(v)
+              elif isinstance(x,list):
+                  for v in x: walk(v)
+              elif isinstance(x,str) and x.startswith('http') and any(k in x.lower() for k in ['.apk','.xapk','pool','cdn']):
+                  found.append(x)
+          walk(data)
+          print('FOUND_URLS')
+          for x in found: print(x)
+          # prefer URLs ending apk/xapk
+          cands=[x for x in found if '.apk' in x.lower() or '.xapk' in x.lower()]
+          if not cands: sys.exit('No direct APK URL found')
+          open('download-url.txt','w').write(cands[0])
+          PY
+
+      - name: Download package
+        shell: bash
+        run: |
+          set -euxo pipefail
+          URL="$(cat download-url.txt)"
+          curl -fL --retry 3 --retry-delay 2 -A 'Mozilla/5.0' "$URL" -o streamingcommunity-source.bin
+          file streamingcommunity-source.bin
+          ls -lh streamingcommunity-source.bin
+          sha256sum streamingcommunity-source.bin | tee sha256.txt
+          python - <<'PY'
+          import zipfile,sys,os
+          p='streamingcommunity-source.bin'
+          if zipfile.is_zipfile(p):
+              with zipfile.ZipFile(p) as z:
+                  names=z.namelist()
+                  open('listing.txt','w').write('\n'.join(names))
+                  print('\n'.join(names[:300]))
+                  arm64=[n for n in names if 'arm64' in n.lower() or 'arm64-v8a' in n.lower()]
+                  print('ARM64_MATCHES',arm64[:50])
+          else:
+              print('Downloaded file is not zip container; likely a single APK')
+          PY
+
+      - name: Upload source package
+        uses: actions/upload-artifact@v4
+        with:
+          name: streamingcommunity-arm64-source
+          path: |
+            streamingcommunity-source.bin
+            aptoide.json
+            download-url.txt
+            sha256.txt
+            listing.txt
+          if-no-files-found: warn
+          retention-days: 7

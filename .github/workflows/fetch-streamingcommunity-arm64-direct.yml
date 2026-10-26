@@ -16,15 +16,18 @@ jobs:
           set -euxo pipefail
           python - <<'PY'
           import requests, json, sys
-          urls=[
-            'https://ws75.aptoide.com/api/7/app/get/package_name=com.devshifters.streamingcommunity',
-            'https://ws75.aptoide.com/api/7/app/get/package_name=com.devshifters.streamingcommunity/store_name=apps',
-            'https://ws2.aptoide.com/api/7/app/get/package_name=com.devshifters.streamingcommunity'
-          ]
+          pkg='com.devshifters.streamingcommunity'
+          urls=[]
+          for host in ['ws75.aptoide.com','ws2.aptoide.com']:
+              for store in ['devshifters','streaming-community-devshifters','streamingcommunity-devshifters']:
+                  urls.append(f'https://{host}/api/7/app/get/package_name={pkg}/store_name={store}')
+                  urls.append(f'https://{host}/api/7/app/get/store_name={store}/package_name={pkg}')
           data=None
+          responses=[]
           for u in urls:
               try:
                   r=requests.get(u,timeout=30,headers={'User-Agent':'Mozilla/5.0'})
+                  responses.append({'url':u,'status':r.status_code,'body':r.text[:1000]})
                   print('URL',u,'STATUS',r.status_code)
                   print(r.text[:500])
                   if r.ok:
@@ -32,24 +35,25 @@ jobs:
                       if j.get('info',{}).get('status')=='OK' or j.get('nodes') or j.get('data'):
                           data=j; break
               except Exception as e:
+                  responses.append({'url':u,'error':repr(e)})
                   print('ERR',u,e)
+          open('responses.json','w').write(json.dumps(responses,indent=2))
           if not data:
               sys.exit('No usable Aptoide API response')
           open('aptoide.json','w').write(json.dumps(data,indent=2))
-          # recursively find plausible APK/XAPK URL strings
           found=[]
           def walk(x):
               if isinstance(x,dict):
-                  for v in x.values(): walk(v)
+                  for k,v in x.items():
+                      if isinstance(v,str) and v.startswith('http'):
+                          found.append((k,v))
+                      walk(v)
               elif isinstance(x,list):
                   for v in x: walk(v)
-              elif isinstance(x,str) and x.startswith('http') and any(k in x.lower() for k in ['.apk','.xapk','pool','cdn']):
-                  found.append(x)
           walk(data)
           print('FOUND_URLS')
-          for x in found: print(x)
-          # prefer URLs ending apk/xapk
-          cands=[x for x in found if '.apk' in x.lower() or '.xapk' in x.lower()]
+          for k,x in found: print(k,x)
+          cands=[x for k,x in found if any(t in x.lower() for t in ['.apk','.xapk','pool','cdn.aptoide'])]
           if not cands: sys.exit('No direct APK URL found')
           open('download-url.txt','w').write(cands[0])
           PY
@@ -64,7 +68,7 @@ jobs:
           ls -lh streamingcommunity-source.bin
           sha256sum streamingcommunity-source.bin | tee sha256.txt
           python - <<'PY'
-          import zipfile,sys,os
+          import zipfile
           p='streamingcommunity-source.bin'
           if zipfile.is_zipfile(p):
               with zipfile.ZipFile(p) as z:
@@ -74,16 +78,18 @@ jobs:
                   arm64=[n for n in names if 'arm64' in n.lower() or 'arm64-v8a' in n.lower()]
                   print('ARM64_MATCHES',arm64[:50])
           else:
-              print('Downloaded file is not zip container; likely a single APK')
+              print('Downloaded file is likely a single APK')
           PY
 
       - name: Upload source package
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: streamingcommunity-arm64-source
           path: |
             streamingcommunity-source.bin
             aptoide.json
+            responses.json
             download-url.txt
             sha256.txt
             listing.txt

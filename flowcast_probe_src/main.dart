@@ -37,7 +37,6 @@ class ProbePage extends StatefulWidget {
 
 class _ProbePageState extends State<ProbePage> {
   static const MethodChannel _multicast = MethodChannel('flowcast/multicast');
-
   static const String _testMp4 =
       'https://storage.googleapis.com/cpe-sample-media/content/big_buck_bunny/prog/big_buck_bunny_prog.mp4';
   static const String _testHls =
@@ -46,18 +45,18 @@ class _ProbePageState extends State<ProbePage> {
   late final CastService _service;
   StreamSubscription<List<CastDevice>>? _discoverySubscription;
   StreamSubscription<dynamic>? _stateSubscription;
-  Timer? _reconnectTimer;
+  Timer? _healthTimer;
 
   final List<String> _log = <String>[];
   List<CastDevice> _devices = <CastDevice>[];
+  CastDevice? _rememberedDevice;
   CastSession? _session;
-  CastDevice? _selectedDevice;
   bool _scanning = false;
   bool _connecting = false;
-  bool _probing = false;
-  int _reconnectAttempt = 0;
+  bool _recovering = false;
+  bool _port8009Open = false;
 
-  bool get _isConnected => _session != null;
+  bool get _connected => _session != null;
 
   @override
   void initState() {
@@ -66,263 +65,237 @@ class _ProbePageState extends State<ProbePage> {
       discoveryProviders: <DeviceDiscoveryProvider>[
         ChromecastDiscoveryProvider(),
       ],
-      sessionFactory: (CastDevice device) {
-        if (device.protocol != CastProtocol.chromecast) {
-          throw UnsupportedError('Only Chromecast is enabled in this probe.');
-        }
-        return ChromecastSession(device: device);
-      },
+      sessionFactory: (CastDevice device) => ChromecastSession(device: device),
     );
-    _addLog('Ready. Put phone and Mi Box on the same network, then press Scan.');
+    _addLog('Hotspot Mode ready. Phone = hotspot + sender.');
+    _addLog('FlowCast will cache the Mi Box IP and recover :8009 automatically.');
   }
 
   void _addLog(String message) {
-    final String time = DateTime.now().toLocal().toIso8601String().substring(11, 19);
     if (!mounted) return;
-    setState(() {
-      _log.add('$time  $message');
-    });
+    final String time = DateTime.now().toIso8601String().substring(11, 19);
+    setState(() => _log.add('$time  $message'));
+  }
+
+  Future<void> _acquireMulticast() async {
+    try {
+      await _multicast.invokeMethod<void>('acquire');
+      _addLog('Wi-Fi multicast lock acquired.');
+    } catch (e) {
+      _addLog('Multicast lock warning: $e');
+    }
   }
 
   Future<void> _startScan() async {
     if (_scanning) return;
-
     await _discoverySubscription?.cancel();
     setState(() {
-      _devices = <CastDevice>[];
       _scanning = true;
+      _devices = <CastDevice>[];
     });
-    _addLog('Starting Chromecast discovery...');
+    _addLog('Starting hotspot-aware Chromecast discovery...');
+    await _acquireMulticast();
 
-    try {
-      await _multicast.invokeMethod<void>('acquire');
-      _addLog('Wi-Fi multicast lock acquired.');
-    } catch (error) {
-      _addLog('Multicast lock warning: $error');
-    }
+    _discoverySubscription = _service.startDiscovery().listen(
+      (List<CastDevice> devices) {
+        final List<CastDevice> chromecasts = devices
+            .where((CastDevice d) => d.protocol == CastProtocol.chromecast)
+            .toList(growable: false);
+        if (!mounted) return;
+        setState(() => _devices = chromecasts);
+        if (chromecasts.isNotEmpty) {
+          _rememberedDevice = chromecasts.first;
+          _addLog('mDNS: ${chromecasts.length} device(s). Cached ${chromecasts.first.address.address}:${chromecasts.first.port}.');
+        }
+      },
+      onError: (Object error, StackTrace stack) {
+        _addLog('DISCOVERY ERROR: $error');
+      },
+    );
 
-    try {
-      _discoverySubscription = _service.startDiscovery().listen(
-        (List<CastDevice> devices) {
-          final List<CastDevice> chromecasts = devices
-              .where((CastDevice d) => d.protocol == CastProtocol.chromecast)
-              .toList(growable: false);
-          if (!mounted) return;
-          setState(() {
-            _devices = chromecasts;
-          });
-          _addLog('Discovery update: ${chromecasts.length} device(s).');
-        },
-        onError: (Object error, StackTrace stackTrace) {
-          _addLog('DISCOVERY ERROR: $error');
-          if (mounted) setState(() => _scanning = false);
-        },
-      );
-
-      await Future<void>.delayed(const Duration(seconds: 15));
-      if (mounted) {
-        setState(() => _scanning = false);
-        _addLog('15 s checkpoint: ${_devices.length} Chromecast device(s) visible.');
-      }
-    } catch (error) {
-      _addLog('DISCOVERY START ERROR: $error');
-      if (mounted) setState(() => _scanning = false);
+    await Future<void>.delayed(const Duration(seconds: 20));
+    if (mounted) {
+      setState(() => _scanning = false);
+      _addLog('20 s checkpoint: ${_devices.length} Chromecast device(s).');
     }
   }
 
-  Future<bool> _probeTcp(CastDevice device, int port) async {
+  Future<bool> _probePort(CastDevice device, int port, {Duration timeout = const Duration(milliseconds: 1500)}) async {
     final Stopwatch sw = Stopwatch()..start();
     Socket? socket;
     try {
-      socket = await Socket.connect(
-        device.address,
-        port,
-        timeout: const Duration(seconds: 3),
-      );
+      socket = await Socket.connect(device.address, port, timeout: timeout);
       sw.stop();
       _addLog('TCP $port OPEN (${sw.elapsedMilliseconds} ms).');
       return true;
-    } on SocketException catch (error) {
+    } on SocketException catch (e) {
       sw.stop();
-      _addLog('TCP $port FAILED (${sw.elapsedMilliseconds} ms): ${error.message}.');
-      return false;
-    } catch (error) {
-      sw.stop();
-      _addLog('TCP $port ERROR (${sw.elapsedMilliseconds} ms): $error');
+      _addLog('TCP $port unavailable (${sw.elapsedMilliseconds} ms): ${e.message}.');
       return false;
     } finally {
       socket?.destroy();
     }
   }
 
-  Future<bool> _runNetworkPreflight(CastDevice device) async {
-    if (_probing) return false;
-    setState(() => _probing = true);
-    _addLog('Network preflight for ${device.name} (${device.address.address})...');
-
-    try {
-      final bool port8008 = await _probeTcp(device, 8008);
-      final bool port8009 = await _probeTcp(device, 8009);
-
-      if (port8008 && port8009) {
-        _addLog('PREFLIGHT: 8008 + 8009 reachable. Proceeding to Cast TLS handshake.');
-      } else if (port8008 && !port8009) {
-        _addLog('PREFLIGHT: device HTTP is reachable but CastV2 :8009 is not. Receiver service may be stuck.');
-      } else if (!port8008 && !port8009) {
-        _addLog('PREFLIGHT: mDNS found the box but unicast TCP cannot reach it. Suspect hotspot/AP isolation or routing.');
-      } else {
-        _addLog('PREFLIGHT: :8009 reachable while :8008 is closed. Cast may still work; continuing.');
+  Future<bool> _waitForCastPort(CastDevice device, {int attempts = 8}) async {
+    for (int i = 1; i <= attempts; i++) {
+      _addLog('Hotspot probe $i/$attempts → ${device.address.address}:8009');
+      if (await _probePort(device, 8009)) {
+        if (mounted) setState(() => _port8009Open = true);
+        return true;
       }
-      return port8009;
-    } finally {
-      if (mounted) setState(() => _probing = false);
+      if (mounted) setState(() => _port8009Open = false);
+      if (i < attempts) {
+        await Future<void>.delayed(Duration(milliseconds: 700 + i * 250));
+      }
+    }
+    return false;
+  }
+
+  Future<void> _networkTest() async {
+    final CastDevice? d = _rememberedDevice ?? (_devices.isNotEmpty ? _devices.first : null);
+    if (d == null) {
+      _addLog('No cached Mi Box. Run Scan first.');
+      return;
+    }
+    _addLog('Hotspot network test for ${d.address.address}...');
+    final bool p8008 = await _probePort(d, 8008);
+    final bool p8009 = await _probePort(d, 8009);
+    setState(() => _port8009Open = p8009);
+    if (p8008 && p8009) {
+      _addLog('RESULT: hotspot unicast path healthy.');
+    } else if (p8008 && !p8009) {
+      _addLog('RESULT: Mi Box responds, but Chromecast :8009 is asleep/stuck.');
+    } else if (!p8008 && !p8009) {
+      _addLog('RESULT: mDNS may be visible while hotspot unicast is temporarily blocked.');
+    } else {
+      _addLog('RESULT: :8009 reachable; Cast can proceed even if :8008 is closed.');
     }
   }
 
   Future<void> _attachSession(CastDevice device, CastSession session) async {
     await _stateSubscription?.cancel();
     _session = session;
-    _selectedDevice = device;
-    _reconnectAttempt = 0;
-
+    _rememberedDevice = device;
     _stateSubscription = session.stateStream.listen((dynamic state) {
-      final String text = state.toString();
-      _addLog('SESSION STATE: $text');
-
-      if (text.toLowerCase().contains('disconnected')) {
+      final String s = state.toString();
+      _addLog('SESSION STATE: $s');
+      if (s.toLowerCase().contains('disconnected')) {
         if (_session == session) {
           _session = null;
           if (mounted) setState(() {});
         }
-        _scheduleAutoReconnect(device);
+        unawaited(_recoverControlChannel());
       }
     });
-
     if (mounted) setState(() {});
+    _startHealthMonitor();
   }
 
-  Future<void> _connect(
-    CastDevice device, {
-    bool automatic = false,
-    bool skipPreflight = false,
-  }) async {
-    if (_connecting) return;
-    setState(() {
-      _connecting = true;
-      _selectedDevice = device;
-    });
+  Future<bool> _connectRemembered({bool recovery = false}) async {
+    if (_connecting) return false;
+    final CastDevice? d = _rememberedDevice ?? (_devices.isNotEmpty ? _devices.first : null);
+    if (d == null) {
+      _addLog('No Mi Box cached. Scan first.');
+      return false;
+    }
 
-    _addLog(
-      automatic
-          ? 'Auto-reconnect attempt ${_reconnectAttempt + 1} to ${device.name}...'
-          : 'Connecting to ${device.name} at ${device.address}:${device.port}...',
-    );
-
+    setState(() => _connecting = true);
     try {
-      if (!skipPreflight) {
-        final bool castPortOpen = await _runNetworkPreflight(device);
-        if (!castPortOpen) {
-          _addLog('CAST CONNECT SKIPPED: TCP :8009 is unreachable right now.');
-          return;
-        }
+      _addLog(recovery ? 'Hotspot recovery: waiting for Cast port...' : 'Preparing Cast connection to ${d.address.address}...');
+      if (!await _waitForCastPort(d)) {
+        _addLog('CAST CONNECT DEFERRED: :8009 never became reachable.');
+        return false;
       }
-
-      final CastSession session = await _service.connect(device);
-      await _attachSession(device, session);
-      _addLog(automatic ? 'Auto-reconnect succeeded.' : 'Connected to ${device.name}.');
-    } catch (error) {
-      _addLog(automatic ? 'AUTO-RECONNECT ERROR: $error' : 'CONNECT ERROR: $error');
-      if (automatic) {
-        _scheduleAutoReconnect(device);
-      }
+      _addLog('Port ready. Starting CastV2/TLS handshake...');
+      final CastSession session = await _service.connect(d);
+      await _attachSession(d, session);
+      _addLog(recovery ? 'Hotspot recovery succeeded.' : 'Connected to ${d.name}.');
+      return true;
+    } catch (e) {
+      _addLog('CAST CONNECT ERROR: $e');
+      _session = null;
+      return false;
     } finally {
       if (mounted) setState(() => _connecting = false);
     }
   }
 
-  void _scheduleAutoReconnect(CastDevice device) {
-    if (!mounted || _session != null) return;
-    if (_reconnectAttempt >= 3) {
-      _addLog('Auto-reconnect stopped after 3 attempts. Tap Reconnect or Network test.');
-      return;
+  Future<void> _recoverControlChannel() async {
+    if (_recovering || _session != null || !mounted) return;
+    setState(() => _recovering = true);
+    _addLog('Control channel lost. Hotspot recovery started.');
+    try {
+      for (int cycle = 1; cycle <= 4 && _session == null; cycle++) {
+        _addLog('Recovery cycle $cycle/4.');
+        if (await _connectRemembered(recovery: true)) break;
+        await Future<void>.delayed(Duration(seconds: cycle));
+      }
+      if (_session == null) {
+        _addLog('Recovery paused. Cached Mi Box retained; next media command will retry.');
+      }
+    } finally {
+      if (mounted) setState(() => _recovering = false);
     }
+  }
 
-    _reconnectTimer?.cancel();
-    _reconnectAttempt += 1;
-    final Duration delay = Duration(seconds: _reconnectAttempt);
-    _addLog('Control socket disconnected. Retrying in ${delay.inSeconds}s...');
-    _reconnectTimer = Timer(delay, () {
-      if (mounted && _session == null) {
-        _connect(device, automatic: true);
+  void _startHealthMonitor() {
+    _healthTimer?.cancel();
+    _healthTimer = Timer.periodic(const Duration(seconds: 12), (_) async {
+      final CastDevice? d = _rememberedDevice;
+      if (d == null || !mounted) return;
+      final bool open = await _probePort(d, 8009, timeout: const Duration(milliseconds: 900));
+      if (mounted) setState(() => _port8009Open = open);
+      if (!open && _session != null) {
+        _addLog('WATCHDOG: :8009 disappeared; marking control channel stale.');
+        _session = null;
+        if (mounted) setState(() {});
+        unawaited(_recoverControlChannel());
       }
     });
   }
 
-  Future<CastSession?> _ensureConnected() async {
+  Future<CastSession?> _ensureSession() async {
     if (_session != null) return _session;
-
-    final CastDevice? device = _selectedDevice ?? (_devices.isNotEmpty ? _devices.first : null);
-    if (device == null) {
-      _addLog('No Mi Box remembered. Scan and select it first.');
-      return null;
-    }
-
-    _reconnectTimer?.cancel();
-    _addLog('No live control session. Reconnecting before LOAD...');
-    await _connect(device);
-    return _session;
+    if (await _connectRemembered()) return _session;
+    return null;
   }
 
   Future<void> _cast(String url, CastMediaType type, String title) async {
-    final CastSession? session = await _ensureConnected();
-    if (session == null) {
-      _addLog('MEDIA LOAD ABORTED: could not reconnect.');
+    final CastSession? s = await _ensureSession();
+    if (s == null) {
+      _addLog('MEDIA LOAD ABORTED: hotspot Cast channel unavailable.');
       return;
     }
-
     try {
       _addLog('Loading $title...');
-      await session.loadMedia(
-        CastMedia(
-          url: url,
-          type: type,
-          title: title,
-        ),
-      );
-      _addLog('LOAD accepted by sender stack. Check the TV.');
-    } catch (error) {
-      _addLog('MEDIA LOAD ERROR: $error');
-      if (error.toString().toLowerCase().contains('not connected')) {
-        _session = null;
-        if (mounted) setState(() {});
-      }
+      await s.loadMedia(CastMedia(url: url, type: type, title: title));
+      _addLog('LOAD accepted. Check the TV.');
+    } catch (e) {
+      _addLog('MEDIA LOAD ERROR: $e');
+      _session = null;
+      if (mounted) setState(() {});
+      unawaited(_recoverControlChannel());
     }
   }
 
   Future<void> _disconnect() async {
-    _reconnectTimer?.cancel();
-    _reconnectAttempt = 3;
-
-    final CastSession? session = _session;
-    if (session != null) {
+    _healthTimer?.cancel();
+    final CastSession? s = _session;
+    if (s != null) {
       try {
-        await session.disconnect();
+        await s.disconnect();
       } catch (_) {}
     }
-
     await _stateSubscription?.cancel();
     _stateSubscription = null;
-    if (!mounted) return;
-    setState(() {
-      _session = null;
-      _selectedDevice = null;
-    });
-    _addLog('Disconnected by user.');
+    setState(() => _session = null);
+    _addLog('Disconnected by user. Mi Box IP kept in cache.');
   }
 
   @override
   void dispose() {
-    _reconnectTimer?.cancel();
+    _healthTimer?.cancel();
     _discoverySubscription?.cancel();
     _stateSubscription?.cancel();
     _session?.disconnect();
@@ -333,17 +306,19 @@ class _ProbePageState extends State<ProbePage> {
 
   @override
   Widget build(BuildContext context) {
-    final CastDevice? selected = _selectedDevice;
-    final bool connected = _isConnected;
-
+    final CastDevice? d = _rememberedDevice;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('FlowCast Probe v0.2.3'),
+        title: const Text('FlowCast Probe v0.2.4'),
         actions: <Widget>[
-          IconButton(
-            tooltip: 'Clear log',
-            onPressed: () => setState(_log.clear),
-            icon: const Icon(Icons.delete_outline),
+          Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: Center(
+              child: Chip(
+                avatar: const Icon(Icons.wifi_tethering, size: 18),
+                label: const Text('HOTSPOT'),
+              ),
+            ),
           ),
         ],
       ),
@@ -351,93 +326,54 @@ class _ProbePageState extends State<ProbePage> {
         child: Column(
           children: <Widget>[
             ListTile(
-              leading: Icon(connected ? Icons.cast_connected : Icons.cast),
-              title: Text(
-                connected
-                    ? 'Connected: ${selected?.name ?? 'Cast device'}'
-                    : selected == null
-                        ? 'No Cast session'
-                        : 'Disconnected: ${selected.name}',
-              ),
-              subtitle: Text(
-                selected == null
-                    ? 'Search for Chromecast / Chromecast built-in'
-                    : '${selected.address}:${selected.port}${connected ? '' : ' • diagnostics ready'}',
-              ),
-              trailing: selected == null
-                  ? FilledButton.icon(
-                      onPressed: _scanning ? null : _startScan,
-                      icon: const Icon(Icons.search),
-                      label: Text(_scanning ? 'Scanning…' : 'Scan'),
-                    )
-                  : connected
-                      ? TextButton(
-                          onPressed: _disconnect,
-                          child: const Text('Disconnect'),
-                        )
-                      : FilledButton(
-                          onPressed: (_connecting || _probing) ? null : () => _connect(selected),
-                          child: Text(_connecting || _probing ? 'Testing…' : 'Reconnect'),
-                        ),
+              leading: Icon(_connected ? Icons.cast_connected : Icons.cast),
+              title: Text(_connected ? 'Connected: ${d?.name ?? 'Mi Box'}' : d == null ? 'No Mi Box cached' : 'Cached: ${d.name}'),
+              subtitle: Text(d == null ? 'Scan once; FlowCast will reuse the IP.' : '${d.address.address}:${d.port} • 8009 ${_port8009Open ? 'OPEN' : 'unknown/down'}'),
+              trailing: d == null
+                  ? FilledButton(onPressed: _scanning ? null : _startScan, child: Text(_scanning ? 'Scanning…' : 'Scan'))
+                  : _connected
+                      ? TextButton(onPressed: _disconnect, child: const Text('Disconnect'))
+                      : FilledButton(onPressed: (_connecting || _recovering) ? null : _connectRemembered, child: Text(_connecting || _recovering ? 'Recovering…' : 'Connect')),
             ),
-            if (selected == null && _devices.isNotEmpty)
+            if (d == null && _devices.isNotEmpty)
               ConstrainedBox(
-                constraints: const BoxConstraints(maxHeight: 210),
+                constraints: const BoxConstraints(maxHeight: 180),
                 child: ListView.builder(
                   shrinkWrap: true,
                   itemCount: _devices.length,
-                  itemBuilder: (BuildContext context, int index) {
-                    final CastDevice device = _devices[index];
+                  itemBuilder: (context, index) {
+                    final CastDevice item = _devices[index];
                     return ListTile(
                       leading: const Icon(Icons.tv),
-                      title: Text(device.name),
-                      subtitle: Text('${device.address}:${device.port}'),
-                      onTap: _connecting ? null : () => _connect(device),
+                      title: Text(item.name),
+                      subtitle: Text('${item.address.address}:${item.port}'),
+                      onTap: () {
+                        setState(() => _rememberedDevice = item);
+                        _connectRemembered();
+                      },
                     );
                   },
                 ),
               ),
-            if (selected != null)
+            if (d != null)
               Padding(
-                padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
+                padding: const EdgeInsets.fromLTRB(12, 4, 12, 10),
                 child: Column(
                   children: <Widget>[
                     SizedBox(
                       width: double.infinity,
                       child: OutlinedButton.icon(
-                        onPressed: _probing ? null : () => _runNetworkPreflight(selected),
+                        onPressed: _networkTest,
                         icon: const Icon(Icons.lan_outlined),
-                        label: Text(_probing ? 'Testing ports…' : 'Network test 8008/8009'),
+                        label: const Text('Hotspot network test'),
                       ),
                     ),
                     const SizedBox(height: 8),
                     Row(
                       children: <Widget>[
-                        Expanded(
-                          child: FilledButton(
-                            onPressed: (_connecting || _probing)
-                                ? null
-                                : () => _cast(
-                                      _testMp4,
-                                      CastMediaType.mp4,
-                                      'FlowCast MP4 test',
-                                    ),
-                            child: const Text('Test MP4'),
-                          ),
-                        ),
+                        Expanded(child: FilledButton(onPressed: () => _cast(_testMp4, CastMediaType.mp4, 'FlowCast MP4 test'), child: const Text('Test MP4'))),
                         const SizedBox(width: 8),
-                        Expanded(
-                          child: FilledButton.tonal(
-                            onPressed: (_connecting || _probing)
-                                ? null
-                                : () => _cast(
-                                      _testHls,
-                                      CastMediaType.hls,
-                                      'FlowCast HLS test',
-                                    ),
-                            child: const Text('Test HLS'),
-                          ),
-                        ),
+                        Expanded(child: FilledButton.tonal(onPressed: () => _cast(_testHls, CastMediaType.hls, 'FlowCast HLS test'), child: const Text('Test HLS'))),
                       ],
                     ),
                   ],
@@ -446,30 +382,17 @@ class _ProbePageState extends State<ProbePage> {
             const Divider(height: 1),
             const Padding(
               padding: EdgeInsets.fromLTRB(12, 10, 12, 4),
-              child: Row(
-                children: <Widget>[
-                  Icon(Icons.terminal, size: 18),
-                  SizedBox(width: 8),
-                  Text('Diagnostic log', style: TextStyle(fontWeight: FontWeight.bold)),
-                ],
-              ),
+              child: Row(children: <Widget>[Icon(Icons.terminal, size: 18), SizedBox(width: 8), Text('Diagnostic log', style: TextStyle(fontWeight: FontWeight.bold))]),
             ),
             Expanded(
-              child: _log.isEmpty
-                  ? const Center(child: Text('Press Scan to begin.'))
-                  : ListView.builder(
-                      padding: const EdgeInsets.all(12),
-                      itemCount: _log.length,
-                      itemBuilder: (BuildContext context, int index) {
-                        return Padding(
-                          padding: const EdgeInsets.only(bottom: 5),
-                          child: SelectableText(
-                            _log[index],
-                            style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
-                          ),
-                        );
-                      },
-                    ),
+              child: ListView.builder(
+                padding: const EdgeInsets.all(12),
+                itemCount: _log.length,
+                itemBuilder: (context, index) => Padding(
+                  padding: const EdgeInsets.only(bottom: 5),
+                  child: SelectableText(_log[index], style: const TextStyle(fontFamily: 'monospace', fontSize: 12)),
+                ),
+              ),
             ),
           ],
         ),

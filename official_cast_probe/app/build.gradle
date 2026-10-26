@@ -4,7 +4,7 @@ plugins {
 
 android {
     namespace 'com.flowcast.officialprobe'
-    compileSdk 36
+    compileSdk 37
 
     defaultConfig {
         applicationId 'com.flowcast.officialprobe'
@@ -29,6 +29,5 @@ android {
 
 dependencies {
     implementation 'androidx.appcompat:appcompat:1.7.1'
-    implementation 'androidx.mediarouter:mediarouter:1.8.1'
     implementation 'com.google.android.gms:play-services-cast-framework:23.0.0'
 }

@@ -45,13 +45,17 @@ class _ProbePageState extends State<ProbePage> {
   late final CastService _service;
   StreamSubscription<List<CastDevice>>? _discoverySubscription;
   StreamSubscription<dynamic>? _stateSubscription;
+  Timer? _reconnectTimer;
 
   final List<String> _log = <String>[];
   List<CastDevice> _devices = <CastDevice>[];
   CastSession? _session;
-  CastDevice? _connectedDevice;
+  CastDevice? _selectedDevice;
   bool _scanning = false;
   bool _connecting = false;
+  int _reconnectAttempt = 0;
+
+  bool get _isConnected => _session != null;
 
   @override
   void initState() {
@@ -101,6 +105,7 @@ class _ProbePageState extends State<ProbePage> {
           final List<CastDevice> chromecasts = devices
               .where((CastDevice d) => d.protocol == CastProtocol.chromecast)
               .toList(growable: false);
+          if (!mounted) return;
           setState(() {
             _devices = chromecasts;
           });
@@ -123,31 +128,92 @@ class _ProbePageState extends State<ProbePage> {
     }
   }
 
-  Future<void> _connect(CastDevice device) async {
+  Future<void> _attachSession(CastDevice device, CastSession session) async {
+    await _stateSubscription?.cancel();
+    _session = session;
+    _selectedDevice = device;
+    _reconnectAttempt = 0;
+
+    _stateSubscription = session.stateStream.listen((dynamic state) {
+      final String text = state.toString();
+      _addLog('SESSION STATE: $text');
+
+      if (text.toLowerCase().contains('disconnected')) {
+        if (_session == session) {
+          _session = null;
+          if (mounted) setState(() {});
+        }
+        _scheduleAutoReconnect(device);
+      }
+    });
+
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _connect(CastDevice device, {bool automatic = false}) async {
     if (_connecting) return;
-    setState(() => _connecting = true);
-    _addLog('Connecting to ${device.name} at ${device.address}:${device.port}...');
+    setState(() {
+      _connecting = true;
+      _selectedDevice = device;
+    });
+
+    _addLog(
+      automatic
+          ? 'Auto-reconnect attempt ${_reconnectAttempt + 1} to ${device.name}...'
+          : 'Connecting to ${device.name} at ${device.address}:${device.port}...',
+    );
 
     try {
       final CastSession session = await _service.connect(device);
-      await _stateSubscription?.cancel();
-      _session = session;
-      _connectedDevice = device;
-      _stateSubscription = session.stateStream.listen((dynamic state) {
-        _addLog('SESSION STATE: $state');
-      });
-      _addLog('Connected to ${device.name}.');
+      await _attachSession(device, session);
+      _addLog(automatic ? 'Auto-reconnect succeeded.' : 'Connected to ${device.name}.');
     } catch (error) {
-      _addLog('CONNECT ERROR: $error');
+      _addLog(automatic ? 'AUTO-RECONNECT ERROR: $error' : 'CONNECT ERROR: $error');
+      if (automatic) {
+        _scheduleAutoReconnect(device);
+      }
     } finally {
       if (mounted) setState(() => _connecting = false);
     }
   }
 
+  void _scheduleAutoReconnect(CastDevice device) {
+    if (!mounted || _session != null) return;
+    if (_reconnectAttempt >= 3) {
+      _addLog('Auto-reconnect stopped after 3 attempts. Tap Reconnect or a media test.');
+      return;
+    }
+
+    _reconnectTimer?.cancel();
+    _reconnectAttempt += 1;
+    final Duration delay = Duration(seconds: _reconnectAttempt);
+    _addLog('Control socket disconnected. Retrying in ${delay.inSeconds}s...');
+    _reconnectTimer = Timer(delay, () {
+      if (mounted && _session == null) {
+        _connect(device, automatic: true);
+      }
+    });
+  }
+
+  Future<CastSession?> _ensureConnected() async {
+    if (_session != null) return _session;
+
+    final CastDevice? device = _selectedDevice ?? (_devices.isNotEmpty ? _devices.first : null);
+    if (device == null) {
+      _addLog('No Mi Box remembered. Scan and select it first.');
+      return null;
+    }
+
+    _reconnectTimer?.cancel();
+    _addLog('No live control session. Reconnecting before LOAD...');
+    await _connect(device);
+    return _session;
+  }
+
   Future<void> _cast(String url, CastMediaType type, String title) async {
-    final CastSession? session = _session;
+    final CastSession? session = await _ensureConnected();
     if (session == null) {
-      _addLog('Connect to the Mi Box first.');
+      _addLog('MEDIA LOAD ABORTED: could not reconnect.');
       return;
     }
 
@@ -163,28 +229,37 @@ class _ProbePageState extends State<ProbePage> {
       _addLog('LOAD accepted by sender stack. Check the TV.');
     } catch (error) {
       _addLog('MEDIA LOAD ERROR: $error');
+      if (error.toString().toLowerCase().contains('not connected')) {
+        _session = null;
+        if (mounted) setState(() {});
+      }
     }
   }
 
   Future<void> _disconnect() async {
+    _reconnectTimer?.cancel();
+    _reconnectAttempt = 3;
+
     final CastSession? session = _session;
     if (session != null) {
       try {
         await session.disconnect();
       } catch (_) {}
     }
+
     await _stateSubscription?.cancel();
     _stateSubscription = null;
     if (!mounted) return;
     setState(() {
       _session = null;
-      _connectedDevice = null;
+      _selectedDevice = null;
     });
-    _addLog('Disconnected.');
+    _addLog('Disconnected by user.');
   }
 
   @override
   void dispose() {
+    _reconnectTimer?.cancel();
     _discoverySubscription?.cancel();
     _stateSubscription?.cancel();
     _session?.disconnect();
@@ -195,11 +270,12 @@ class _ProbePageState extends State<ProbePage> {
 
   @override
   Widget build(BuildContext context) {
-    final CastDevice? connected = _connectedDevice;
+    final CastDevice? selected = _selectedDevice;
+    final bool connected = _isConnected;
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('FlowCast Probe v0.2.1'),
+        title: const Text('FlowCast Probe v0.2.2'),
         actions: <Widget>[
           IconButton(
             tooltip: 'Clear log',
@@ -212,31 +288,36 @@ class _ProbePageState extends State<ProbePage> {
         child: Column(
           children: <Widget>[
             ListTile(
-              leading: Icon(
-                connected == null ? Icons.cast : Icons.cast_connected,
-              ),
+              leading: Icon(connected ? Icons.cast_connected : Icons.cast),
               title: Text(
-                connected == null
-                    ? 'No Cast session'
-                    : 'Connected: ${connected.name}',
+                connected
+                    ? 'Connected: ${selected?.name ?? 'Cast device'}'
+                    : selected == null
+                        ? 'No Cast session'
+                        : 'Disconnected: ${selected.name}',
               ),
               subtitle: Text(
-                connected == null
+                selected == null
                     ? 'Search for Chromecast / Chromecast built-in'
-                    : '${connected.address}:${connected.port}',
+                    : '${selected.address}:${selected.port}${connected ? '' : ' • auto-reconnect enabled'}',
               ),
-              trailing: connected == null
+              trailing: selected == null
                   ? FilledButton.icon(
                       onPressed: _scanning ? null : _startScan,
                       icon: const Icon(Icons.search),
                       label: Text(_scanning ? 'Scanning…' : 'Scan'),
                     )
-                  : TextButton(
-                      onPressed: _disconnect,
-                      child: const Text('Disconnect'),
-                    ),
+                  : connected
+                      ? TextButton(
+                          onPressed: _disconnect,
+                          child: const Text('Disconnect'),
+                        )
+                      : FilledButton(
+                          onPressed: _connecting ? null : () => _connect(selected),
+                          child: Text(_connecting ? 'Connecting…' : 'Reconnect'),
+                        ),
             ),
-            if (connected == null && _devices.isNotEmpty)
+            if (selected == null && _devices.isNotEmpty)
               ConstrainedBox(
                 constraints: const BoxConstraints(maxHeight: 210),
                 child: ListView.builder(
@@ -253,29 +334,33 @@ class _ProbePageState extends State<ProbePage> {
                   },
                 ),
               ),
-            if (connected != null)
+            if (selected != null)
               Padding(
                 padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
                 child: Row(
                   children: <Widget>[
                     Expanded(
                       child: FilledButton(
-                        onPressed: () => _cast(
-                          _testMp4,
-                          CastMediaType.mp4,
-                          'FlowCast MP4 test',
-                        ),
+                        onPressed: _connecting
+                            ? null
+                            : () => _cast(
+                                  _testMp4,
+                                  CastMediaType.mp4,
+                                  'FlowCast MP4 test',
+                                ),
                         child: const Text('Test MP4'),
                       ),
                     ),
                     const SizedBox(width: 8),
                     Expanded(
                       child: FilledButton.tonal(
-                        onPressed: () => _cast(
-                          _testHls,
-                          CastMediaType.hls,
-                          'FlowCast HLS test',
-                        ),
+                        onPressed: _connecting
+                            ? null
+                            : () => _cast(
+                                  _testHls,
+                                  CastMediaType.hls,
+                                  'FlowCast HLS test',
+                                ),
                         child: const Text('Test HLS'),
                       ),
                     ),

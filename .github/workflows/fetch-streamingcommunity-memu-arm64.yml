@@ -10,44 +10,34 @@ jobs:
   fetch:
     runs-on: ubuntu-latest
     steps:
-      - name: Fetch page and download arm64 package
+      - name: Download resolved arm64 XAPK
         shell: bash
         run: |
           set -euxo pipefail
           UA='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/130 Safari/537.36'
           PAGE='https://m.memuplay.com/it/download-streaming-community.html'
+          URL='https://www.memuplay.com/apkdownload.php?file_name=com.devshifters.streamingcommunity-20250312-3f0ad2af.xapk&from=app_details_it_com.devshifters.streamingcommunity'
           curl -fL -A "$UA" -c cookies.txt -b cookies.txt "$PAGE" -o page.html
-          URL=$(python - <<'PY'
-          import re, html
-          s=open('page.html',errors='ignore').read()
-          matches=re.findall(r'href=["\x27]([^"\x27]*apkdownload\.php\?[^"\x27]+)["\x27]',s,re.I)
-          if not matches:
-              raise SystemExit('No apkdownload link in page')
-          open('links.txt','w').write('\n'.join(matches))
-          u=html.unescape(matches[0])
-          if u.startswith('/'):
-              u='https://www.memuplay.com'+u
-          elif not u.startswith('http'):
-              u='https://www.memuplay.com/'+u.lstrip('/')
-          print(u)
-          PY
-          )
           echo "$URL" | tee download-url.txt
           curl -fL --retry 3 --retry-delay 2 -A "$UA" -e "$PAGE" -c cookies.txt -b cookies.txt "$URL" -o streamingcommunity-memu.bin
           file streamingcommunity-memu.bin
           ls -lh streamingcommunity-memu.bin
           sha256sum streamingcommunity-memu.bin | tee sha256.txt
           python - <<'PY'
-          import zipfile
+          import zipfile, json
           p='streamingcommunity-memu.bin'
           if not zipfile.is_zipfile(p):
               raise SystemExit('Downloaded payload is not APK/XAPK zip')
           with zipfile.ZipFile(p) as z:
               names=z.namelist()
               open('listing.txt','w').write('\n'.join(names))
-              print('\n'.join(names[:500]))
-              arm64=[n for n in names if 'arm64' in n.lower() or 'arm64-v8a' in n.lower()]
-              print('ARM64', arm64[:100])
+              report={
+                'files': len(names),
+                'arm64': [n for n in names if 'arm64' in n.lower() or 'arm64-v8a' in n.lower()][:200],
+                'manifest_candidates':[n for n in names if n.endswith('manifest.json') or n.endswith('.apk')][:100]
+              }
+              open('inspection.json','w').write(json.dumps(report,indent=2))
+              print(json.dumps(report,indent=2))
           PY
 
       - name: Upload package
@@ -58,9 +48,9 @@ jobs:
           path: |
             streamingcommunity-memu.bin
             page.html
-            links.txt
             download-url.txt
             listing.txt
+            inspection.json
             sha256.txt
           if-no-files-found: warn
           retention-days: 7

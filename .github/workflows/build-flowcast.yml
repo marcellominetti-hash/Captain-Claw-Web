@@ -8,12 +8,52 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - name: Restore clean-room FlowCast source
+      - name: Restore and patch clean-room FlowCast source
         run: |
           mkdir -p flowcast-build
           cat flowcast-payload/part-* | base64 -d > /tmp/flowcast.zip
           unzip -q /tmp/flowcast.zip -d flowcast-build
           printf 'android.useAndroidX=true\n' > flowcast-build/gradle.properties
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('flowcast-build/app/src/main/java/com/scflowcast/app/LocalRelayServer.kt')
+          s = p.read_text()
+          start = s.index('    private fun findLanIPv4()')
+          end = s.index('    companion object', start)
+          replacement = '''    private fun findLanIPv4(): String? {
+              data class Candidate(val name: String, val ip: String)
+              val candidates = mutableListOf<Candidate>()
+              Collections.list(NetworkInterface.getNetworkInterfaces()).forEach { network ->
+                  if (network.isUp && !network.isLoopback) {
+                      val lower = network.name.lowercase()
+                      if (!lower.startsWith("tun") && !lower.startsWith("vpn")) {
+                          Collections.list(network.inetAddresses)
+                              .filterIsInstance<Inet4Address>()
+                              .filter { !it.isLoopbackAddress && it.isSiteLocalAddress }
+                              .forEach { address ->
+                                  val hostAddress = address.hostAddress
+                                  if (!hostAddress.isNullOrBlank()) {
+                                      candidates += Candidate(network.name, hostAddress)
+                                  }
+                              }
+                      }
+                  }
+              }
+              fun rank(name: String): Int {
+                  val lower = name.lowercase()
+                  return when {
+                      lower.startsWith("ap") || "hotspot" in lower -> 0
+                      lower.startsWith("wlan") || lower.startsWith("wifi") -> 1
+                      lower.startsWith("rndis") || lower.startsWith("usb") -> 2
+                      lower.startsWith("eth") -> 3
+                      else -> 10
+                  }
+              }
+              return candidates.sortedBy { rank(it.name) }.firstOrNull()?.ip
+          }
+'''
+          p.write_text(s[:start] + replacement + s[end:])
+          PY
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
@@ -35,8 +75,16 @@ jobs:
           ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
           ANDROID_HOME: /usr/local/lib/android/sdk
         run: gradle --no-daemon :app:assembleRelease
+      - name: Collect APK and signing tools
+        env:
+          ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+        run: |
+          mkdir -p flowcast-output
+          cp flowcast-build/app/build/outputs/apk/release/app-release-unsigned.apk flowcast-output/SC-FlowCast-v0.4.13-unsigned.apk
+          cp "$ANDROID_SDK_ROOT/build-tools/36.0.0/lib/apksigner.jar" flowcast-output/apksigner.jar
+          cp "$ANDROID_SDK_ROOT/build-tools/36.0.0/zipalign" flowcast-output/zipalign
       - uses: actions/upload-artifact@v4
         with:
-          name: SC-FlowCast-v0.4.13-unsigned
-          path: flowcast-build/app/build/outputs/apk/release/app-release-unsigned.apk
+          name: SC-FlowCast-v0.4.13-build
+          path: flowcast-output/
           if-no-files-found: error

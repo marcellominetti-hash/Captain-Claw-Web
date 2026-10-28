@@ -1,0 +1,33 @@
+name: Build temporary SC FlowCast 0.4.13
+on:
+  push:
+    branches: [ flowcast-build-0413 ]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore clean-room FlowCast source
+        run: |
+          mkdir -p flowcast-build
+          cat flowcast-payload/part-* | base64 -d > /tmp/flowcast.zip
+          unzip -q /tmp/flowcast.zip -d flowcast-build
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+      - uses: android-actions/setup-android@v3
+      - name: Install SDK
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0" "platform-tools"
+      - name: Build unsigned release APK
+        working-directory: flowcast-build
+        run: gradle --no-daemon :app:assembleRelease
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SC-FlowCast-v0.4.13-unsigned
+          path: flowcast-build/app/build/outputs/apk/release/app-release-unsigned.apk
+          if-no-files-found: error

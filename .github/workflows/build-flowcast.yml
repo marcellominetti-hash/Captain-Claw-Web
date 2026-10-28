@@ -13,6 +13,7 @@ jobs:
           mkdir -p flowcast-build
           cat flowcast-payload/part-* | base64 -d > /tmp/flowcast.zip
           unzip -q /tmp/flowcast.zip -d flowcast-build
+          printf 'android.useAndroidX=true\n' > flowcast-build/gradle.properties
       - uses: actions/setup-java@v5
         with:
           distribution: temurin

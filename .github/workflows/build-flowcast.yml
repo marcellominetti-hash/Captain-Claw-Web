@@ -14,46 +14,7 @@ jobs:
           cat flowcast-payload/part-* | base64 -d > /tmp/flowcast.zip
           unzip -q /tmp/flowcast.zip -d flowcast-build
           printf 'android.useAndroidX=true\n' > flowcast-build/gradle.properties
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('flowcast-build/app/src/main/java/com/scflowcast/app/LocalRelayServer.kt')
-          s = p.read_text()
-          start = s.index('    private fun findLanIPv4()')
-          end = s.index('    companion object', start)
-          replacement = '''    private fun findLanIPv4(): String? {
-              data class Candidate(val name: String, val ip: String)
-              val candidates = mutableListOf<Candidate>()
-              Collections.list(NetworkInterface.getNetworkInterfaces()).forEach { network ->
-                  if (network.isUp && !network.isLoopback) {
-                      val lower = network.name.lowercase()
-                      if (!lower.startsWith("tun") && !lower.startsWith("vpn")) {
-                          Collections.list(network.inetAddresses)
-                              .filterIsInstance<Inet4Address>()
-                              .filter { !it.isLoopbackAddress && it.isSiteLocalAddress }
-                              .forEach { address ->
-                                  val hostAddress = address.hostAddress
-                                  if (!hostAddress.isNullOrBlank()) {
-                                      candidates += Candidate(network.name, hostAddress)
-                                  }
-                              }
-                      }
-                  }
-              }
-              fun rank(name: String): Int {
-                  val lower = name.lowercase()
-                  return when {
-                      lower.startsWith("ap") || "hotspot" in lower -> 0
-                      lower.startsWith("wlan") || lower.startsWith("wifi") -> 1
-                      lower.startsWith("rndis") || lower.startsWith("usb") -> 2
-                      lower.startsWith("eth") -> 3
-                      else -> 10
-                  }
-              }
-              return candidates.sortedBy { rank(it.name) }.firstOrNull()?.ip
-          }
-'''
-          p.write_text(s[:start] + replacement + s[end:])
-          PY
+          python3 -c "from pathlib import Path; import base64; p=Path('flowcast-build/app/src/main/java/com/scflowcast/app/LocalRelayServer.kt'); s=p.read_text(); a=s.index('    private fun findLanIPv4()'); b=s.index('    companion object',a); r=base64.b64decode('ICAgIHByaXZhdGUgZnVuIGZpbmRMYW5JUHY0KCk6IFN0cmluZz8gewogICAgICAgIGRhdGEgY2xhc3MgQ2FuZGlkYXRlKHZhbCBuYW1lOiBTdHJpbmcsIHZhbCBpcDogU3RyaW5nKQogICAgICAgIHZhbCBjYW5kaWRhdGVzID0gbXV0YWJsZUxpc3RPZjxDYW5kaWRhdGU+KCkKCiAgICAgICAgQ29sbGVjdGlvbnMubGlzdChOZXR3b3JrSW50ZXJmYWNlLmdldE5ldHdvcmtJbnRlcmZhY2VzKCkpLmZvckVhY2ggeyBuZXR3b3JrIC0+CiAgICAgICAgICAgIGlmIChuZXR3b3JrLmlzVXAgJiYgIW5ldHdvcmsuaXNMb29wYmFjaykgewogICAgICAgICAgICAgICAgdmFsIGxvd2VyID0gbmV0d29yay5uYW1lLmxvd2VyY2FzZSgpCiAgICAgICAgICAgICAgICBpZiAoIWxvd2VyLnN0YXJ0c1dpdGgoInR1biIpICYmICFsb3dlci5zdGFydHNXaXRoKCJ2cG4iKSkgewogICAgICAgICAgICAgICAgICAgIENvbGxlY3Rpb25zLmxpc3QobmV0d29yay5pbmV0QWRkcmVzc2VzKQogICAgICAgICAgICAgICAgICAgICAgICAuZmlsdGVySXNJbnN0YW5jZTxJbmV0NEFkZHJlc3M+KCkKICAgICAgICAgICAgICAgICAgICAgICAgLmZpbHRlciB7ICFpdC5pc0xvb3BiYWNrQWRkcmVzcyAmJiBpdC5pc1NpdGVMb2NhbEFkZHJlc3MgfQogICAgICAgICAgICAgICAgICAgICAgICAuZm9yRWFjaCB7IGFkZHJlc3MgLT4KICAgICAgICAgICAgICAgICAgICAgICAgICAgIHZhbCBob3N0QWRkcmVzcyA9IGFkZHJlc3MuaG9zdEFkZHJlc3MKICAgICAgICAgICAgICAgICAgICAgICAgICAgIGlmICghaG9zdEFkZHJlc3MuaXNOdWxsT3JCbGFuaygpKSB7CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgY2FuZGlkYXRlcyArPSBDYW5kaWRhdGUobmV0d29yay5uYW1lLCBob3N0QWRkcmVzcykKICAgICAgICAgICAgICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgICAgICAgICAgICAgfQogICAgICAgICAgICAgICAgfQogICAgICAgICAgICB9CiAgICAgICAgfQoKICAgICAgICBmdW4gcmFuayhuYW1lOiBTdHJpbmcpOiBJbnQgewogICAgICAgICAgICB2YWwgbG93ZXIgPSBuYW1lLmxvd2VyY2FzZSgpCiAgICAgICAgICAgIHJldHVybiB3aGVuIHsKICAgICAgICAgICAgICAgIGxvd2VyLnN0YXJ0c1dpdGgoImFwIikgfHwgImhvdHNwb3QiIGluIGxvd2VyIC0+IDAKICAgICAgICAgICAgICAgIGxvd2VyLnN0YXJ0c1dpdGgoIndsYW4iKSB8fCBsb3dlci5zdGFydHNXaXRoKCJ3aWZpIikgLT4gMQogICAgICAgICAgICAgICAgbG93ZXIuc3RhcnRzV2l0aCgicm5kaXMiKSB8fCBsb3dlci5zdGFydHNXaXRoKCJ1c2IiKSAtPiAyCiAgICAgICAgICAgICAgICBsb3dlci5zdGFydHNXaXRoKCJldGgiKSAtPiAzCiAgICAgICAgICAgICAgICBlbHNlIC0+IDEwCiAgICAgICAgICAgIH0KICAgICAgICB9CgogICAgICAgIHJldHVybiBjYW5kaWRhdGVzLnNvcnRlZEJ5IHsgcmFuayhpdC5uYW1lKSB9LmZpcnN0T3JOdWxsKCk/LmlwCiAgICB9Cg==').decode(); p.write_text(s[:a]+r+s[b:])"
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
@@ -61,7 +22,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.13'
-      - name: Install Android SDK 36 using preinstalled sdkmanager
+      - name: Install Android SDK 36
         env:
           ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
           ANDROID_HOME: /usr/local/lib/android/sdk
